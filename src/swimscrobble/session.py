@@ -33,3 +33,20 @@ def from_manifest(manifest: dict) -> list[PlannedTrack]:
         )
         for t in manifest["tracks"]
     ]
+
+
+def played_part(
+    manifest: dict, played_minutes: float | None = None, skipped: set[int] = frozenset()
+) -> tuple[list[PlannedTrack], float]:
+    """The tracks that count as heard, and how many seconds were listened.
+
+    The staged list is longer than the swim (buffer), so by default only the first `minutes` of it
+    counts; `played_minutes` overrides that (stopped early, or swam longer).
+    """
+    from .scrobble import trim_to_played
+
+    plan = [p for p in from_manifest(manifest) if p.position not in skipped]
+    total = sum(p.track.duration for p in plan)
+    minutes = played_minutes if played_minutes is not None else manifest.get("minutes")
+    seconds = min(total, minutes * 60) if minutes is not None else total
+    return trim_to_played(plan, seconds), seconds

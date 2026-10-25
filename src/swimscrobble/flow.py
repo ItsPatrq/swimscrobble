@@ -20,7 +20,7 @@ from .generator import Candidate
 from .library import Track, scan
 from .mix import build_mix
 from .scrobble import build_scrobbles, to_csv
-from .session import from_manifest, to_manifest
+from .session import played_part, to_manifest
 
 STAGED_RE = re.compile(r"^\d{3} - ")
 
@@ -61,10 +61,10 @@ def settle_previous(db, cfg: Config, now: datetime, notify, **deps) -> str:
     row = history.pending_session(db)
     if row is None:
         return "no previous session"
-    plan = from_manifest(json.loads(row["manifest"]))
-    total = sum(p.track.duration for p in plan)
+    # the staged list is longer than the swim: only the first `minutes` of it was heard
+    plan, listened = played_part(json.loads(row["manifest"]))
     end = now - timedelta(minutes=cfg.session_offset_minutes)
-    scrobbles = build_scrobbles(plan, end - timedelta(seconds=total))
+    scrobbles = build_scrobbles(plan, end - timedelta(seconds=listened))
     if cfg.auto_submit:
         try:
             msg = submit_session(db, row, scrobbles, cfg, **deps)
@@ -113,7 +113,7 @@ def plan_and_stage(
     clear_staged(stage_dir, previous)
     plan = build_mix(
         library, pool_candidates(db), feature_of or (lambda t: cached_features(db, t)),
-        minutes=cfg.minutes, seed=seed, rec_ratio=cfg.rec_ratio, min_energy=cfg.min_energy,
+        minutes=cfg.minutes * cfg.buffer_factor, seed=seed, rec_ratio=cfg.rec_ratio, min_energy=cfg.min_energy,
         plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
     )
     for p in plan:

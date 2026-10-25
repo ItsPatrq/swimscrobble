@@ -44,7 +44,7 @@ def test_first_connect_stages_session(env):
     cfg, db, lib, vol = env
     log, msgs = run(cfg, db, lib)
     staged = sorted(p.name for p in (vol / "SWIM PRO" / "Music").iterdir())
-    assert len(staged) == 12 and staged[0].startswith("001 - ")
+    assert len(staged) == 24 and staged[0].startswith("001 - ")  # 60 min swim x2 buffer
     assert history.pending_session(db) is not None and "staged" in msgs[-1]
 
 
@@ -63,7 +63,7 @@ def test_reconnect_awaits_confirmation_without_auto_submit(env):
     assert log == ["awaiting confirmation"]
     assert history.pending_session(db) is not None  # not overwritten by a new plan
     csv = next((Path(flow.config_dir()) / "pending").glob("*.csv")).read_text()
-    assert csv.count("\n") == 13  # header + 12 tracks
+    assert csv.count("\n") == 13  # header + only the 12 tracks that fit the 60 min swim, not all 24 staged
 
 
 def test_auto_submit_scrobbles_then_stages_next(env):
@@ -79,7 +79,7 @@ def test_auto_submit_scrobbles_then_stages_next(env):
     assert sent[0][0].timestamp == datetime(2026, 10, 25, 9, 0) and sent[0][-1].timestamp < datetime(2026, 10, 25, 10)
     assert log[0] == "scrobbled 12 tracks" and "staged session" in log[-1]
     second = {p.name for p in (vol / "SWIM PRO" / "Music").iterdir()}
-    assert len(second) == 12  # old staged files cleared, new ones in
+    assert len(second) == 24  # old staged files cleared, new full buffer in (recent tracks top it up)
     assert history.play_counts(db)
 
 

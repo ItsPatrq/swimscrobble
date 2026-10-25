@@ -12,8 +12,8 @@ from . import history
 from .library import scan
 from .mix import build_mix
 from .planner import plan_session, total_seconds
-from .scrobble import build_scrobbles, confirm, skip_positions, to_csv, trim_to_played
-from .session import from_manifest, to_manifest
+from .scrobble import build_scrobbles, confirm, to_csv
+from .session import played_part, to_manifest
 
 
 def _fmt(seconds: float) -> str:
@@ -29,11 +29,12 @@ def notify(msg: str) -> None:
 def cmd_plan(a) -> None:
     cfg = cfgmod.load()
     tracks = scan(Path(a.music or cfg.music_path))
-    plan = plan_session(tracks, a.minutes or cfg.minutes, a.seed, arc=cfg.arc)
+    swim = a.minutes or cfg.minutes
+    plan = plan_session(tracks, swim * cfg.buffer_factor, a.seed, arc=cfg.arc)
     for p in plan:
         print(f"{p.position:03d}  {_fmt(p.track.duration)}  {p.track.artist} - {p.track.title}")
     print(f"\n{len(plan)} tracks, {_fmt(total_seconds(plan))}")
-    manifest = to_manifest(plan, a.seed, a.minutes or cfg.minutes)
+    manifest = to_manifest(plan, a.seed, swim)
     Path(a.out).write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
     print(f"manifest: {a.out}")
     if a.stage:
@@ -46,11 +47,10 @@ def cmd_plan(a) -> None:
         print(f"staged {len(plan)} files into {dest} (originals untouched)")
 
 
-def _scrobbles_from_args(plan, a):
-    if a.skip:
-        plan = skip_positions(plan, {int(x) for x in a.skip.split(",")})
-    if a.played_minutes is not None:
-        plan = trim_to_played(plan, a.played_minutes * 60)
+def _scrobbles_from_args(manifest, a):
+    """Skipped tracks never played; the swim length (or --played-minutes) bounds what was heard."""
+    skipped = {int(x) for x in a.skip.split(",")} if a.skip else set()
+    plan, _ = played_part(manifest, a.played_minutes, skipped)
     return build_scrobbles(plan, datetime.fromisoformat(a.start))
 
 
@@ -80,8 +80,8 @@ def _deliver(scrobbles, a, cfg) -> bool:
 
 def cmd_scrobble(a) -> None:
     cfg = cfgmod.load()
-    plan = from_manifest(json.loads(Path(a.manifest).read_text()))
-    _deliver(_scrobbles_from_args(plan, a), a, cfg)
+    manifest = json.loads(Path(a.manifest).read_text())
+    _deliver(_scrobbles_from_args(manifest, a), a, cfg)
 
 
 def cmd_scrobble_pending(a) -> None:
@@ -90,12 +90,13 @@ def cmd_scrobble_pending(a) -> None:
     row = history.pending_session(db)
     if not row:
         raise SystemExit("no pending session")
-    plan = from_manifest(json.loads(row["manifest"]))
+    manifest = json.loads(row["manifest"])
+    skipped = {int(x) for x in a.skip.split(",")} if a.skip else set()
+    _, listened = played_part(manifest, a.played_minutes, skipped)
     a.start = a.start or (
-        datetime.now() - timedelta(minutes=cfg.session_offset_minutes)
-        - timedelta(seconds=sum(p.track.duration for p in plan))
+        datetime.now() - timedelta(minutes=cfg.session_offset_minutes) - timedelta(seconds=listened)
     ).isoformat(timespec="seconds")
-    scrobbles = _scrobbles_from_args(plan, a)
+    scrobbles = _scrobbles_from_args(manifest, a)
     if _deliver(scrobbles, a, cfg):
         history.mark_scrobbled(db, row["id"], [(s.artist, s.title, s.timestamp.timestamp()) for s in scrobbles])
 
@@ -157,17 +158,18 @@ def cmd_mix(a) -> None:
 
     cfg = cfgmod.load()
     db = history.connect()
+    swim = a.minutes or cfg.minutes
     library = scan(Path(a.music or cfg.music_path))
     plan = build_mix(
         library, flow.pool_candidates(db), lambda t: cached_features(db, t),
-        minutes=a.minutes or cfg.minutes, seed=a.seed, rec_ratio=cfg.rec_ratio, min_energy=a.min_energy or cfg.min_energy,
+        minutes=swim * cfg.buffer_factor, seed=a.seed, rec_ratio=cfg.rec_ratio, min_energy=a.min_energy or cfg.min_energy,
         plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
     )
     for p in plan:
         print(f"{p.position:03d}  {_fmt(p.track.duration)}  e={p.energy:.2f}  {p.source:3}  {p.track.artist} - {p.track.title}")
     recs = sum(1 for p in plan if p.source == "rec")
     print(f"\n{len(plan)} tracks ({recs} recommendations), {_fmt(total_seconds(plan))}")
-    Path(a.out).write_text(json.dumps(to_manifest(plan, a.seed, a.minutes or cfg.minutes), indent=2, ensure_ascii=False))
+    Path(a.out).write_text(json.dumps(to_manifest(plan, a.seed, swim), indent=2, ensure_ascii=False))
     if a.stage:
         import shutil
 

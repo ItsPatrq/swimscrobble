@@ -18,8 +18,10 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
    - *Order*: a randomised walk that avoids big energy jumps and back-to-back artists. Tracks you
      swam to in the last `no_repeat_days` are skipped, and heavily swum ones fade out.
 2. **Swim.**
-3. **Scrobble**: next time you plug in, the session is timestamped back from plug-in time and sent to
-   Last.fm (and optionally ListenBrainz).
+3. **Scrobble**: the staged list is `buffer_factor` (default 2x) longer than the swim so it can't run
+   out. Only the first `minutes` of it counts as heard: next time you plug in, those tracks are
+   timestamped back from plug-in time and sent to Last.fm (and optionally ListenBrainz). If you swam
+   a different length, say so with `--played-minutes`.
 4. **Podcasts**: the first N episodes of your Pocket Casts *Up Next* queue are mirrored to the device's
    `PocketCast/` folder (not scrobbled).
 
@@ -35,7 +37,8 @@ Requires Python 3.11+, `yt-dlp` and `ffmpeg` for playlist/download features.
 ```toml
 music_dir = "~/Music/swim"
 device_name = "SWIM PRO"
-minutes = 60
+minutes = 60                 # how long you swim
+buffer_factor = 2.0          # staged playlist = minutes x this, so it never runs dry
 auto_submit = false          # true: on-connect scrobbles without asking
 session_offset_minutes = 0   # gap between finishing the swim and plugging in
 ytm_playlist = "https://music.youtube.com/playlist?list=..."

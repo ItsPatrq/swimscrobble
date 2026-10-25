@@ -17,7 +17,8 @@ class Config:
     device_name: str = "SWIM PRO"
     device_music_subdir: str = "Music"
     device_podcast_subdir: str = "PocketCast"
-    minutes: float = 60
+    minutes: float = 60  # how long you swim
+    buffer_factor: float = 2.0  # staged playlist is minutes * this, so it never runs out mid-swim
     auto_submit: bool = False  # on-connect: submit scrobbles without asking
     session_offset_minutes: float = 0  # gap between swim ending and plugging in
     ytm_playlist: str = ""

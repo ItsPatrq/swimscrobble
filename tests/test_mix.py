@@ -141,3 +141,12 @@ def test_feature_cache_hits_until_file_changes(tmp_path):
     os.utime(f, (1, 1))
     energy.cached_features(db, track, fake)
     assert len(calls) == 2
+
+
+def test_buffer_filled_from_recent_when_pool_small():
+    lib = [T(i) for i in range(20)]  # 20 x 200s
+    recent = {(f"artist{i}", f"song{i}") for i in range(10)}
+    plan = build_mix(lib, [], feats({}), minutes=120, seed=1, recent=recent)
+    assert sum(p.track.duration for p in plan) == 4000  # fresh 2000s + recent topped up to the whole library
+    fresh = [p for p in plan if (p.track.artist.casefold(), p.track.title.casefold()) not in recent]
+    assert len(fresh) == 10  # every fresh track is used before any recent one repeats

@@ -95,16 +95,17 @@ def build_mix(
 
     favs: list[Item] = []
     recs: list[Item] = []
+    stale: list[Item] = []  # recently swum: only used if the fresh pool can't fill the buffer
     for t in dedupe(library):
         k = key_of(t)
         f = feature_of(t)
-        if f.energy < min_energy or k in recent:
+        if f.energy < min_energy:
             continue
         c = cmap.get(k)
         is_rec = c is not None and c.sources == {"similar"}
         taste = c.score if c else UNKNOWN_TASTE_WEIGHT
         item = Item(t, "rec" if is_rec else "fav", f.energy, taste * f.energy**2 / (1 + plays.get(k, 0)))
-        (recs if is_rec else favs).append(item)
+        (stale if k in recent else recs if is_rec else favs).append(item)
 
     budget = minutes * 60
     rec_budget = budget * rec_ratio if recs else 0.0
@@ -113,7 +114,8 @@ def build_mix(
 
     # top up any slack (e.g. too few recommendations) from what was left over, favourites first
     used = sum(i.track.duration for i in chosen_recs + chosen_favs)
-    for it in spare_favs + spare_recs:
+    stale.sort(key=lambda i: rng.random())
+    for it in spare_favs + spare_recs + stale:
         if used + it.track.duration <= budget:
             (chosen_recs if it.kind == "rec" else chosen_favs).append(it)
             used += it.track.duration

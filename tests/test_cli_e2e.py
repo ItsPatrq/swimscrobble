@@ -29,14 +29,15 @@ def test_plan_stage_and_scrobble(music, tmp_path, monkeypatch, capsys):
     manifest, stage = tmp_path / "s.json", tmp_path / "stage"
     main(["plan", str(music), "--minutes", "5.2", "--seed", "1", "--out", str(manifest), "--stage", str(stage)])
     m = json.loads(manifest.read_text())
-    assert len(m["tracks"]) == 3  # 100s tracks into 300s budget
+    assert len(m["tracks"]) == 6  # 100s tracks into 2 x 312s buffered budget
+    assert m["minutes"] == 5.2
     assert sorted(p.name for p in stage.iterdir())[0].startswith("001 - ")
     assert m["tracks"][0]["duration"] == 100
 
     out = tmp_path / "out.csv"
     main(["scrobble", str(manifest), "--start", "2026-10-25T07:00", "--skip", "2", "--out", str(out)])
     rows = out.read_text().strip().splitlines()
-    assert len(rows) == 3  # header + 2 (one skipped)
+    assert len(rows) == 4  # header + 3: swim is 312s, so only the first 3 of the other 5 tracks count
     assert rows[1].startswith("2026-10-25T07:00:00") and rows[2].startswith("2026-10-25T07:01:40")
 
     main(["scrobble", str(manifest), "--start", "2026-10-25T07:00", "--played-minutes", "2.5", "--out", str(out)])
