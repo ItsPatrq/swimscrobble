@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timedelta
@@ -158,7 +159,7 @@ def run_sync(cfg, db, size: int = 1000, download: str | bool = False):
             ok = acquire.download_missing(cfg, url, [e for e in missing if e.playlist == url], ask=ask)
             print("download finished" if ok else "download skipped/failed")
 
-    return libsync.sync_library(
+    report = libsync.sync_library(
         cfg, db, size=size,
         fetch_playlist=lambda url: ytm.fetch(url, cookies=cfg.cookies_path),
         history_sync=sync_history,
@@ -167,6 +168,9 @@ def run_sync(cfg, db, size: int = 1000, download: str | bool = False):
         fetch_wishes=(lambda w: acquire.fetch_wishes(cfg, db, w, cfg.auto_fetch, ask=input if download == "ask" else None))
         if (download and cfg.auto_fetch) else None,
     )
+    db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_sync', ?)", (str(time.time()),))
+    db.commit()
+    return report
 
 
 def cmd_sync(a) -> None:
@@ -302,6 +306,16 @@ def cmd_status(a) -> None:
     print(f"device {cfg.device_name}: " + ("connected" if cfg.device_path.is_dir() else "not connected"))
 
 
+def cmd_shell(a) -> None:
+    from rich.console import Console
+
+    from . import shell
+
+    cfg = cfgmod.load()
+    db = history.connect()
+    shell.Shell(cfg, db, shell.real_actions(cfg, db), Console(highlight=False)).run()
+
+
 def cmd_podcasts(a) -> None:
     from . import pocketcasts
 
@@ -345,7 +359,7 @@ def cmd_agent(a) -> None:
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog="swimscrobble")
-    sub = ap.add_subparsers(required=True)
+    sub = ap.add_subparsers()
 
     p = sub.add_parser("plan", help="build a randomised session")
     p.add_argument("music", nargs="?")
@@ -391,6 +405,8 @@ def main(argv=None) -> None:
     rr.add_argument("--sync", action="store_true", help="refresh the pool from Last.fm first")
     rr.set_defaults(func=cmd_reroll)
 
+    sub.add_parser("shell", help="interactive shell (also: run with no arguments)").set_defaults(func=cmd_shell)
+
     sub.add_parser("status", help="what is staged, pool and history sizes").set_defaults(func=cmd_status)
 
     sub.add_parser("eval", help="replay your Last.fm history to evaluate the scoring models").set_defaults(func=cmd_eval)
@@ -421,4 +437,8 @@ def main(argv=None) -> None:
     ag.set_defaults(func=cmd_agent)
 
     args = ap.parse_args(argv)
+    if not hasattr(args, "func"):  # bare `swimscrobble`: the shell on a terminal, the help otherwise
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            return cmd_shell(args)
+        return ap.print_help()
     args.func(args)

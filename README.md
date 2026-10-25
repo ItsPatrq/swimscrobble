@@ -113,6 +113,28 @@ no_repeat_days = 7
 
 macOS may ask for permission to access removable volumes for the agent's Python.
 
+## The interactive shell
+
+Run `swimscrobble` with no arguments (or `swimscrobble shell`). A dashboard shows the headphones (connected, free
+space), the staged playlist (tracks, minutes, how many fill your swim, bucket mix), library and pool sizes,
+wishlist, your Last.fm history, what is excluded as recently swum, and whether the agent is installed. Then
+one key per action:
+
+| key | |
+|---|---|
+| `p` | the staged playlist with times, energy and bucket per track, a marker where your swim ends; edit in place: `d 3,5` delete, `m 7 2` move, `a` add |
+| `r` | reroll: a new playlist (optionally refreshing Last.fm first, optional seed); the old one is discarded, not scrobbled |
+| `a` | add a track: search your library, or YouTube Music (downloads it), then pick the position; slow tracks are flagged |
+| `s` | statistics: top artists and tracks, how much of your listening is new / returning / repeat, library and pool, swims |
+| `w` | wishlist (balanced across buckets): download chosen tracks right now |
+| `y` | sync: Last.fm history, pool, downloads |
+| `c` | scrobble the last swim: how long you swam, which tracks you skipped, preview, send; then stage the next |
+| `k` | skip: forget the staged playlist (you did not swim) |
+| `o` / `e` / `g` | podcasts / run the whole automatic routine now / install or remove the launchd agent |
+
+The shell and the agent share everything (database, config, device state), so use either, or both: the agent
+does the routine when you plug in, the shell is for looking, correcting and rerolling.
+
 ## Daily use
 
 With the agent installed (`swimscrobble agent install`) and `auto_submit = true`, the routine is just plugging in:

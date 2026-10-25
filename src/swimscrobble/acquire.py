@@ -112,6 +112,13 @@ def balanced(wishes: list, weights: dict[str, float] | None) -> list:
     return out
 
 
+def download_video(cfg, video_id: str, run: Callable = subprocess.run) -> bool:
+    """Download one YouTube Music song into the library folder with the configured command."""
+    out = str(cfg.music_path / "%(album|Singles)s" / "%(artist,channel)s - %(title)s.%(ext)s")
+    cmd = playlist_download_command(cfg, f"https://music.youtube.com/watch?v={video_id}", output=out)
+    return run(cmd).returncode == 0
+
+
 def fetch_wishes(
     cfg,
     db,
