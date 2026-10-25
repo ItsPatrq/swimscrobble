@@ -11,8 +11,8 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
    - **Pool first**: the eligible tracks are the ones in your YouTube Music playlist(s)
      (`ytm_playlist` / `ytm_playlists`), downloaded into `~/Music` if missing. Set `pool = "library"`
      to use everything under `music_dir` instead.
-   - **Then check each against your Last.fm history**, which is mirrored locally (every scrobble,
-     updated incrementally), so the answers are exact. Five buckets, each with a share of the
+   - **Then check each against your Last.fm history**, which is mirrored locally (the last
+     `history_days`, then updated incrementally), so the answers are exact. Five buckets, each with a share of the
      time (`mix_weights`):
      - **obsession** (40%): played in the last 30 days;
      - **mid** (15%): played 30-90 days ago and dropped since;
@@ -33,7 +33,8 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
      file for are looked up on YouTube Music (songs only; the title and artist must both match, so no
      covers or live versions) and downloaded, up to `auto_fetch` (default 20) per sync, into
      `auto_dir` (`~/Music/swim-auto`). Those files are always eligible, even if they are not in your
-     playlist. Misses are remembered and retried after 30 days. The list with search links is also
+     playlist. Only tracks you played 3+ times in the last year are wanted (podcast-looking titles are skipped, the
+     list is capped at 300). Misses are remembered, retried after 30 days, and do not use up the quota. The list with search links is also
      written to `~/.config/swimscrobble/wishlist.txt`. Adding tracks to your playlist still works too
      and gives you control over what is in the pool.
 2. **Swim.**
@@ -68,6 +69,7 @@ playlist_minutes = 120       # staged playlist length; the rest is buffer
 auto_submit = false          # true: on-connect scrobbles without asking
 session_offset_minutes = 0   # gap between finishing the swim and plugging in
 ytm_playlist = "https://music.youtube.com/playlist?list=..."
+history_days = 365           # first Last.fm history pull goes this far back; later pulls are incremental
 ytm_playlists = []           # optional extra playlists, all synced
 pool = "playlist"            # or "library"
 lastfm_user = "yourname"

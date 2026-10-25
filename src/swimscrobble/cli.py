@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+import time
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -146,6 +147,11 @@ def run_sync(cfg, db, size: int = 1000, download: str | bool = False):
     """
     from . import acquire, lfhistory, libsync, taste, ytm
 
+    def sync_history():
+        since = int(time.time()) - cfg.history_days * 86400
+        added = lfhistory.sync_history(db, cfg.lastfm_user, log=print, first_since=since)
+        print(f"Last.fm history: +{added} scrobbles")
+
     def dl(missing):
         ask = input if download == "ask" else None
         for url in dict.fromkeys(e.playlist for e in missing):
@@ -155,7 +161,7 @@ def run_sync(cfg, db, size: int = 1000, download: str | bool = False):
     return libsync.sync_library(
         cfg, db, size=size,
         fetch_playlist=lambda url: ytm.fetch(url, cookies=cfg.cookies_path),
-        history_sync=lambda: print(f"Last.fm history: +{lfhistory.sync_history(db, cfg.lastfm_user)} scrobbles"),
+        history_sync=sync_history,
         taste_fetch=lambda user, tracks, artists: taste.fetch_taste(user, tracks, artists),
         download=dl if download else None,
         fetch_wishes=(lambda w: acquire.fetch_wishes(cfg, db, w, cfg.auto_fetch, ask=input if download == "ask" else None))
@@ -206,6 +212,11 @@ def cmd_mix(a) -> None:
         min_energy=a.min_energy or cfg.min_energy, max_per_artist=cfg.max_per_artist,
         plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
     )
+    n_scrobbles = db.execute("SELECT COUNT(*) c FROM scrobbles").fetchone()["c"]
+    if cfg.lastfm_user and not n_scrobbles:
+        print("! no Last.fm history synced yet: every track counts as discovery. Run `swimscrobble sync` first.\n")
+    elif db.execute("SELECT 1 FROM pool WHERE retired=0 AND source IN ('top','loved','playlist','similar') LIMIT 1").fetchone():
+        print("! the pool was built by an older version: run `swimscrobble sync` to rebuild it.\n")
     for p in plan:
         print(f"{p.position:03d}  {_fmt(p.track.duration)}  e={p.energy:.2f}  {p.source:9}  {p.track.artist} - {p.track.title}")
     mixes = Counter(p.source for p in plan)

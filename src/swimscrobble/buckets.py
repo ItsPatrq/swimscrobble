@@ -12,6 +12,7 @@ is then judged against the history, so nothing needs to be in a "top" list to be
 from __future__ import annotations
 
 import math
+import re
 
 from .generator import Candidate
 from .lfhistory import Stat
@@ -21,6 +22,15 @@ from .matcher import norm
 from .taste import Taste
 
 BUCKETS = ("obsession", "mid", "fresh", "lost", "rec")
+WISH_MIN_PLAYS = 3
+WISH_MAX_AGE = 365 * 86400  # only ask for tracks you still listen to, not what you played in 2014
+MAX_WISHES = 300
+# podcast / video / long-form titles that end up in Last.fm history but are not songs
+NOT_A_SONG = re.compile(r"#\d+|\b(episode|odcinek|ep\.)\s*\d+|\||\bpodcast\b", re.I)
+
+
+def looks_like_song(title: str) -> bool:
+    return len(title) <= 70 and not NOT_A_SONG.search(title)
 KNOWN_ARTIST_PLAYS = 3  # all-time plays before an artist counts as "known"
 
 
@@ -44,6 +54,7 @@ def assign(
     library: list[Track],
     pool: set[tuple[str, str]] | None = None,
     idx: LocalIndex | None = None,
+    now: float | None = None,
 ) -> tuple[list[Candidate], list[Candidate]]:
     """Return (candidates for owned pool tracks, wanted-but-not-owned candidates).
 
@@ -116,7 +127,8 @@ def assign(
         wanted.setdefault((norm(a), norm(t)), Candidate(a, t, s, {bucket}))
 
     for (a, t), st in foreign.items():
-        if st.total >= 2:  # played repeatedly on Last.fm, nothing local
+        recent_enough = now is None or st.last >= now - WISH_MAX_AGE
+        if st.total >= WISH_MIN_PLAYS and recent_enough and looks_like_song(t):
             b = _bucket(st, artist_plays.get(norm(a), 0), False)
             want(a, t, b, score(b, st, a, t, False, 0.0))
     for a, t, m in taste.similar:
@@ -129,5 +141,5 @@ def assign(
         for a, t in tracks:
             if not idx.find(a, t) and (a, t) not in history:
                 want(a, t, "fresh", 0.4)
-    wishes = sorted(wanted.values(), key=lambda c: -c.score)
+    wishes = sorted(wanted.values(), key=lambda c: -c.score)[:MAX_WISHES]
     return sorted(owned, key=lambda c: -c.score), wishes

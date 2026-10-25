@@ -7,6 +7,7 @@ from swimscrobble.library import Track
 from swimscrobble.taste import Taste
 
 DAY = 86400
+NOW = 4000 * DAY
 
 
 def T(artist, title, dur=200):
@@ -21,10 +22,13 @@ LIB = [
 # Last.fm spells things its own way (accents, remaster tags) - linking must cope
 HISTORY = {
     ("Now Band", "Obsessed"): Stat(90, 20, 10, 10, 1),
-    ("Now Band", "Another Old Hit"): Stat(30, 0, 0, 0, 1),
+    ("Now Band", "Another Old Hit"): Stat(30, 0, 0, 0, NOW - 200 * DAY),
+    ("Dead Band", "Played In 2014"): Stat(50, 0, 0, 0, NOW - 3000 * DAY),
+    ("CD-Action Air", "Film Cyberpunk 2077! Kto zagra Keanu Reevesa? | #179"): Stat(9, 9, 0, 0, NOW - DAY),
+    ("Rare Band", "Played Twice"): Stat(2, 0, 2, 0, NOW - 50 * DAY),
     ("Old Band", "Two Months Ago (Remastered)"): Stat(6, 0, 6, 0, 1),
     ("Gem Band", "Forgotten Banger"): Stat(80, 0, 0, 0, 1),
-    ("Unowned Band", "Played A Lot"): Stat(25, 25, 0, 0, 1),
+    ("Unowned Band", "Played A Lot"): Stat(25, 25, 0, 0, NOW - DAY),
 }
 
 
@@ -65,7 +69,7 @@ def test_played_but_unowned_tracks_become_wishes_discoveries_too():
     t = Taste(similar=[("Far Band", "Rec Not Owned", 0.9), ("Now Band", "Obsessed", 0.5)],
               artist_tracks={"Now Band": [("Now Band", "Famous Not Owned")]},
               genre_tracks=[("Far Band", "Genre Not Owned")])
-    _, wanted = assign(t, HISTORY, LIB)
+    _, wanted = assign(t, HISTORY, LIB, now=NOW)
     got = {c.title: next(iter(c.sources)) for c in wanted}
     assert got["Played A Lot"] == "obsession"  # 25 plays last month, no local file: top priority
     assert got["Another Old Hit"] == "lost"
@@ -104,3 +108,18 @@ def test_fetch_taste_uses_seeds_from_history():
     assert t.genre_tracks[0] == ("G", "GenreSong")
     assert {c["tag"] for c in calls if c["method"] == "tag.getTopTracks"} == {"industrial"}  # generic tag skipped
     assert [c["artist"] for c in calls if c["method"] == "track.getSimilar"] == ["ArtA", "ArtB"]
+
+
+def test_wishlist_skips_old_rare_and_non_song_entries():
+    _, wanted = assign(Taste(), HISTORY, LIB, now=NOW)
+    titles = {c.title for c in wanted}
+    assert titles == {"Played A Lot", "Another Old Hit"}  # not: 2014 plays, 2-play track, podcast episode
+    from swimscrobble.buckets import looks_like_song
+    assert looks_like_song("Enjoy the Silence") and not looks_like_song("Weekly Show | #12") and not looks_like_song("x" * 80)
+
+
+def test_wishlist_is_capped_to_the_best_300():
+    from swimscrobble import buckets
+    hist = {(f"Art{i}", f"Song{i}"): Stat(10 + i, 10 + i, 0, 0, NOW - DAY) for i in range(400)}
+    _, wanted = assign(None, hist, [], now=NOW)
+    assert len(wanted) == buckets.MAX_WISHES and wanted[0].title == "Song399"

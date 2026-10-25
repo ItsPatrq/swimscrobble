@@ -1,6 +1,7 @@
 """Sync the swim pool with the local library: link wanted tracks to files, find what is missing."""
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -55,6 +56,7 @@ def sync_library(
         downloaded = True
 
     key = lambda t: (t.artist.casefold(), t.title.casefold())  # noqa: E731
+    when = now if now is not None else time.time()
 
     def judge():
         """Pool first (playlist + auto-fetched files), then check each track against the history."""
@@ -76,8 +78,8 @@ def sync_library(
             if taste_fetch:
                 taste = taste_fetch(cfg.lastfm_user, [k for k, _ in recent[:10]],
                                     sorted(artists, key=lambda a: -artists[a]))
-            return assign(taste, st, library, pool, idx)
-        return assign(None, {}, library, pool, idx)  # no history: everything is "discovery"
+            return assign(taste, st, library, pool, idx, when)
+        return assign(None, {}, library, pool, idx, when)  # no history: everything is "discovery"
 
     synced: list[int] = []
     owned, wanted = judge()

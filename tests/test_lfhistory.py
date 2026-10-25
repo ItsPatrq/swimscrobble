@@ -55,3 +55,38 @@ def test_stats_windows(tmp_path):
     st = lfhistory.stats(db, NOW)
     assert st[("A", "x")] == lfhistory.Stat(total=5, p30=2, p60=1, p90=1, last=NOW - 5 * DAY)
     assert st[("B", "old")].total == 1 and st[("B", "old")].p30 == 0
+
+
+def test_interrupted_pull_resumes_instead_of_restarting(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    pages = {1: page([("A", "x", 900), ("A", "x", 800)], 1, 3), 2: page([("A", "x", 700), ("A", "x", 600)], 2, 3),
+             3: page([("A", "x", 500)], 3, 3)}
+
+    def dies_on_page_3(p):
+        if p["page"] == 3:
+            raise RuntimeError("network down")
+        return pages[p["page"]]
+
+    with pytest.raises(RuntimeError):
+        lfhistory.sync_history(db, "me", dies_on_page_3, sleep=lambda s: None)
+    assert db.execute("SELECT COUNT(*) c FROM scrobbles").fetchone()["c"] == 4
+    assert db.execute("SELECT value FROM meta WHERE key='lastfm_history_ts'").fetchone() is None  # not "done" yet
+
+    seen = []
+    # on resume Last.fm only returns what is at or before the oldest scrobble we already have
+    resumed = page([("A", "x", 600), ("A", "x", 500)], 1, 1)
+    n = lfhistory.sync_history(db, "me", lambda p: (seen.append(p) or resumed), sleep=lambda s: None)
+    assert seen[0]["to"] == 600 and "from" not in seen[0] and n == 1
+    assert db.execute("SELECT COUNT(*) c FROM scrobbles").fetchone()["c"] == 5
+    assert db.execute("SELECT value FROM meta WHERE key='lastfm_history_ts'").fetchone()["value"] == "900"
+    assert db.execute("SELECT 1 FROM meta WHERE key='history_resume_to'").fetchone() is None
+
+
+def test_first_pull_is_capped_by_first_since_but_later_pulls_are_incremental(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    seen = []
+    lfhistory.sync_history(db, "me", lambda p: (seen.append(p) or page([("A", "x", 5000)], 1, 1)),
+                           sleep=lambda s: None, first_since=1234)
+    assert seen[0]["from"] == 1235  # asked only for the last year, not the whole decade
+    lfhistory.sync_history(db, "me", lambda p: (seen.append(p) or page([], 1, 1)), sleep=lambda s: None, first_since=1234)
+    assert seen[1]["from"] == 5001  # from the newest scrobble we hold, not first_since again

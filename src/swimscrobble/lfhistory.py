@@ -25,21 +25,43 @@ class Stat:
     last: int  # unix time of the most recent play
 
 
+def _meta(db, key: str) -> int | None:
+    row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+    return int(row["value"]) if row else None
+
+
+def _set_meta(db, key: str, value: int | None) -> None:
+    if value is None:
+        db.execute("DELETE FROM meta WHERE key=?", (key,))
+    else:
+        db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (key, str(value)))
+
+
 def sync_history(
     db,
     user: str,
     transport: Transport = http_get,
     sleep: Callable[[float], None] = time.sleep,
     page_size: int = 200,
+    log: Callable[[str], None] | None = None,
+    first_since: int = 0,
 ) -> int:
-    """Fetch scrobbles newer than the last sync. Safe to interrupt: rows are idempotent."""
-    row = db.execute("SELECT value FROM meta WHERE key='lastfm_history_ts'").fetchone()
-    since = int(row["value"]) if row else 0
-    added, newest, page = 0, since, 1
+    """Fetch scrobbles newer than the last completed sync (on the very first run, newer than
+    `first_since`, so a decade of history is not downloaded when a year is plenty).
+
+    Pages arrive newest first, so an interrupted pull records how far back it got (`resume_to`) and
+    the next run continues from there instead of starting over. Rows are idempotent.
+    """
+    since = _meta(db, "lastfm_history_ts") or first_since
+    resume_to = _meta(db, "history_resume_to")  # oldest scrobble of the interrupted pull
+    newest = _meta(db, "history_pull_newest") or since
+    added, page = 0, 1
     while True:
         params = {"user": user, "limit": page_size, "page": page, "extended": 0}
         if since:
             params["from"] = since + 1
+        if resume_to:
+            params["to"] = resume_to
         data = _get("user.getRecentTracks", transport, **params)["recenttracks"]
         tracks = data.get("track", [])
         if isinstance(tracks, dict):  # a single result is not wrapped in a list
@@ -48,19 +70,26 @@ def sync_history(
         for t in tracks:
             if t.get("@attr", {}).get("nowplaying") or "date" not in t:
                 continue
-            ts = int(t["date"]["uts"])
-            rows.append((ts, t["artist"]["#text"], t["name"]))
-            newest = max(newest, ts)
+            rows.append((int(t["date"]["uts"]), t["artist"]["#text"], t["name"]))
         before = db.total_changes
         db.executemany("INSERT OR IGNORE INTO scrobbles(ts, artist, title) VALUES(?,?,?)", rows)
         added += db.total_changes - before
+        if rows:
+            newest = max(newest, max(r[0] for r in rows))
+            resume_to = min(r[0] for r in rows)
+            _set_meta(db, "history_resume_to", resume_to)
+            _set_meta(db, "history_pull_newest", newest)
         db.commit()
         pages = int(data.get("@attr", {}).get("totalPages", 1))
+        if log and page % 25 == 0:
+            log(f"  page {page}/{pages}, {added} new scrobbles so far")
         if page >= pages:
             break
         page += 1
         sleep(0.25)  # stay well under Last.fm's rate limit
-    db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('lastfm_history_ts', ?)", (str(newest),))
+    _set_meta(db, "lastfm_history_ts", newest)
+    _set_meta(db, "history_resume_to", None)
+    _set_meta(db, "history_pull_newest", None)
     db.commit()
     return added
 

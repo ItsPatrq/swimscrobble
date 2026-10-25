@@ -32,6 +32,7 @@ class Config:
     device_name: str = "SWIM PRO"
     device_music_subdir: str = "Music"
     device_podcast_subdir: str = "PocketCast"
+    history_days: int = 365  # how far back the first Last.fm history pull goes (later pulls are incremental)
     minutes: float = 60  # how long you swim: only this much of the playlist is scrobbled
     playlist_minutes: float = 120  # length of the staged playlist (the rest is buffer)
     auto_submit: bool = False  # on-connect: submit scrobbles without asking

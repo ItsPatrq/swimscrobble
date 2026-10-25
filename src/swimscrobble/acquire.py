@@ -116,15 +116,17 @@ def fetch_wishes(
         if row and (row["status"] == "ok" or now - row["at"] < RETRY_AFTER):
             continue
         todo.append((key, w))
-        if len(todo) >= limit:
+        if len(todo) >= limit * 3:  # misses (not on YouTube Music as a song) must not eat the quota
             break
     if not todo:
         return 0
-    if ask and ask(f"Download {len(todo)} wishlist tracks into {cfg.auto_dir}? [y/N] ").strip().lower() != "y":
+    if ask and ask(f"Download up to {limit} of {len(todo)} wishlist tracks into {cfg.auto_dir}? [y/N] ").strip().lower() != "y":
         return 0
     out = str(cfg.auto_path / "%(artist,channel)s - %(title)s.%(ext)s")
     fetched = 0
     for key, w in todo:
+        if fetched >= limit:
+            break
         entry = find_song(w.artist, w.title, search)
         status = "notfound"
         if entry:

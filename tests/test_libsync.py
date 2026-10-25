@@ -158,13 +158,26 @@ def test_fetch_wishes_downloads_with_watch_url_and_auto_dir_and_remembers(tmp_pa
     search = fake_search({"A One": [song("v1", "A", "One")], "B Two": []})
     wishes = [wish("A", "One"), wish("B", "Two"), wish("C", "Three")]
     n = acquire.fetch_wishes(cfg, db, wishes, 2, search, run, now=1000)
-    assert n == 1 and len(ran) == 1  # only "One" resolved; limit 2 stopped before "Three"
+    assert n == 1 and len(ran) == 1  # "Two" and "Three" are not on YouTube Music, and did not eat the quota of 2
     assert ran[0][-1] == "https://music.youtube.com/watch?v=v1"
     assert str(tmp_path / "auto") in ran[0][ran[0].index("--output") + 1]
-    # next sync: "One" done for good, "Two" (not found) waits 30 days, "Three" is next in line
-    n = acquire.fetch_wishes(cfg, db, wishes, 5, fake_search({"C Three": [song("v3", "C", "Three")]}), run, now=2000)
-    assert n == 1 and ran[1][-1].endswith("v3") and len(ran) == 2
-    assert acquire.fetch_wishes(cfg, db, wishes, 5, search, run, now=2000 + 31 * 86400) == 0  # "Two" retried, still absent
+    # next sync: "One" is done for good, the misses wait 30 days
+    assert acquire.fetch_wishes(cfg, db, wishes, 5, search, run, now=2000) == 0 and len(ran) == 1
+    later = fake_search({"B Two": [song("v2", "B", "Two")]})
+    assert acquire.fetch_wishes(cfg, db, wishes, 5, later, run, now=1000 + 31 * 86400) == 1 and ran[1][-1].endswith("v2")
+
+
+def test_fetch_wishes_stops_at_the_quota(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    cfg = Config(auto_dir=str(tmp_path / "auto"))
+
+    class R:
+        returncode = 0
+
+    ran = []
+    ws = [wish(f"A{i}", f"S{i}") for i in range(10)]
+    search = lambda q: [song("v" + q.split()[0], q.split()[0], q.split()[1])]  # noqa: E731
+    assert acquire.fetch_wishes(cfg, db, ws, 3, search, lambda c: (ran.append(c) or R())) == 3 and len(ran) == 3
 
 
 def test_fetch_wishes_respects_ask_and_failures(tmp_path):
