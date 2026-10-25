@@ -28,7 +28,8 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
 ## Install
 
 ```
-uv venv && uv pip install -e '.[dev]'
+uv tool install --editable .     # puts `swimscrobble` on your PATH (~/.local/bin)
+uv venv && uv pip install -e '.[dev]'   # only needed for development / running tests
 ```
 Requires Python 3.11+, `yt-dlp` and `ffmpeg` for playlist/download features.
 
