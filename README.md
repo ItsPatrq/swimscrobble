@@ -8,9 +8,10 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
 
 1. **Plan** (the *mix*): build a varied, energising 2-hour playlist and copy it to the device as
    `001 - `, `002 - ` ... Headphones play alphabetically, so filename order is play order.
-   - **Pool first**: the eligible tracks are the ones in your YouTube Music playlist(s)
-     (`ytm_playlist` / `ytm_playlists`), downloaded into `~/Music` if missing. Set `pool = "library"`
-     to use everything under `music_dir` instead.
+   - **Pool first**: there is one library folder, `music_dir` (default `~/Music/YouTubeMusic`). Everything
+     in it is eligible; playlist tracks and wishlist tracks are downloaded into it, and the playlist(s)
+     (`ytm_playlist` / `ytm_playlists`) are just another source of downloads. Set `pool = "playlist"` to
+     restrict the session to playlist tracks (plus wishlist downloads).
    - **Then check each against your Last.fm history**, which is mirrored locally (the last
      `history_days`, then updated incrementally), so the answers are exact. Five buckets, each with a share of the
      time (`mix_weights`):
@@ -31,9 +32,8 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
      fade out.
    - *Wishlist, no playlist upkeep needed*: tracks you play a lot (or Last.fm suggests) but have no
      file for are looked up on YouTube Music (songs only; the title and artist must both match, so no
-     covers or live versions) and downloaded, up to `auto_fetch` (default 20) per sync, into
-     `auto_dir` (`~/Music/swim-auto`). Those files are always eligible, even if they are not in your
-     playlist. Only tracks you played 3+ times in the last year are wanted (podcast-looking titles are skipped, the
+     covers or live versions) and downloaded, up to `auto_fetch` (default 20) per sync, into the same
+     library folder (`<album>/<artist> - <title>.mp3`). Only tracks you played 3+ times in the last year are wanted (podcast-looking titles are skipped, the
      list is capped at 300). Misses are remembered, retried after 30 days, and do not use up the quota. The list with search links is also
      written to `~/.config/swimscrobble/wishlist.txt`. Adding tracks to your playlist still works too
      and gives you control over what is in the pool.
@@ -56,13 +56,11 @@ Requires Python 3.11+, `yt-dlp` and `ffmpeg` for playlist/download features.
 ## Config (`~/.config/swimscrobble/config.toml`)
 
 ```toml
-music_dir = "~/Music"          # the whole tree is scanned (recursively)
-exclude_dirs = ["Logic", "Audio Music Apps"]
+music_dir = "~/Music/YouTubeMusic"   # the single library: scanned recursively, downloaded into, staged to the device from here
+exclude_dirs = []
 auto_download = true          # on-connect: download playlist tracks missing from music_dir + wishlist tracks
 auto_fetch = 20               # wishlist tracks per sync (0 = off)
-auto_dir = "~/Music/swim-auto"
 cookies_file = "~/music.youtube.com_cookies.txt"
-download_dir = "~/Music/YouTubeMusic"
 device_name = "SWIM PRO"
 minutes = 60                 # how long you swim (the part that gets scrobbled)
 playlist_minutes = 120       # staged playlist length; the rest is buffer
@@ -71,7 +69,7 @@ session_offset_minutes = 0   # gap between finishing the swim and plugging in
 ytm_playlist = "https://music.youtube.com/playlist?list=..."
 history_days = 365           # first Last.fm history pull goes this far back; later pulls are incremental
 ytm_playlists = []           # optional extra playlists, all synced
-pool = "playlist"            # or "library"
+pool = "library"             # or "playlist"
 lastfm_user = "yourname"
 listenbrainz = false
 arc = false                  # (plain `plan` only) warm-up -> peak -> cool-down by BPM tag
@@ -112,7 +110,7 @@ macOS may ask for permission to access removable volumes for the agent's Python.
 
 ## Library and downloads
 
-`music_dir` (default `~/Music`) is scanned recursively on every `sync` / `on-connect`. Files under
+`music_dir` (default `~/Music/YouTubeMusic`) is scanned recursively on every `sync` / `on-connect`. Files under
 `exclude_dirs`, hidden files and anything under 60 s are ignored. The playlist and your Last.fm tracks
 are matched to those files by title and artist (tolerant of `(Remastered)`, `[MIXED]`, accents and
 `A, B` credits), and the swim pool only ever contains files you actually have.
@@ -120,7 +118,8 @@ are matched to those files by title and artist (tolerant of `(Remastered)`, `[MI
 Playlist tracks with no matching file are downloaded with the same command as your `ymp3` alias
 (`download_command` in the config, run through `yt-dlp` with your cookies), limited to just the missing
 positions via `--playlist-items`, so nothing already in your library is downloaded again. New files land
-in `download_dir` and are picked up on the next scan.
+in `music_dir` and are picked up on the next scan. On connect, the chosen tracks are copied from there to
+the device (the library itself is never emptied).
 
 ## Caveats
 

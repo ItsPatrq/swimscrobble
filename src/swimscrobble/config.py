@@ -13,15 +13,13 @@ def config_dir() -> Path:
 
 @dataclass
 class Config:
-    music_dir: str = "~/Music"  # whole tree is scanned
+    music_dir: str = "~/Music/YouTubeMusic"  # the one library folder: scanned, downloaded into, staged from
     exclude_dirs: list[str] = field(default_factory=lambda: ["Logic", "Audio Music Apps"])
     min_track_seconds: float = 60
     cookies_file: str = "~/music.youtube.com_cookies.txt"
     auto_download: bool = True  # on-connect: fetch playlist tracks missing locally
-    download_dir: str = "~/Music/YouTubeMusic"
-    auto_fetch: int = 20  # wishlist tracks downloaded per sync (0 = off), even if not in your playlist
-    auto_dir: str = "~/Music/swim-auto"  # where those land; always eligible for the pool
-    # {url} and {items} are filled in; this is the `ymp3` alias spelled out
+    auto_fetch: int = 20  # wishlist tracks downloaded per sync (0 = off), whether or not they are in a playlist
+    # {download_dir} is music_dir; this is the `ymp3` alias spelled out
     download_command: list[str] = field(default_factory=lambda: [
         "yt-dlp", "--cookies", "{cookies}",
         "--extractor-args", "youtube:player_client=web_music+BGUTIL__1,web_creator+BGUTIL__1",
@@ -39,7 +37,7 @@ class Config:
     session_offset_minutes: float = 0  # gap between swim ending and plugging in
     ytm_playlist: str = ""
     ytm_playlists: list[str] = field(default_factory=list)  # more playlists; all are synced locally
-    pool: str = "playlist"  # "playlist": only tracks in your playlist(s) are eligible; "library": all of music_dir
+    pool: str = "library"  # "library": every track in music_dir is eligible; "playlist": only those in your playlist(s)
     listenbrainz: bool = False
     podcast_dir: str = "~/Music/swim-podcasts"
     max_podcasts: int = 10
@@ -61,10 +59,6 @@ class Config:
     @property
     def playlists(self) -> list[str]:
         return list(dict.fromkeys([u for u in [self.ytm_playlist, *self.ytm_playlists] if u]))
-
-    @property
-    def auto_path(self) -> Path:
-        return Path(self.auto_dir).expanduser()
 
     @property
     def cookies_path(self) -> str | None:

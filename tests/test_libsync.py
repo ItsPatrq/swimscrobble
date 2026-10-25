@@ -87,6 +87,7 @@ def test_pool_is_the_playlist_and_history_decides_buckets(tmp_path):
     taste = lambda user, tracks, artists: (seeds.append((tracks, artists)) or Taste())  # noqa: E731
     cfg = make_cfg(tmp_path)
     cfg.ytm_playlists = ["https://music.youtube.com/playlist?list=Y"]
+    cfg.pool = "playlist"
     syncs = []
     rep = sync_library(cfg, db, fetch_playlist=lambda u: [e for e in entries], taste_fetch=taste,
                        history_sync=lambda: syncs.append(1), library_loader=lambda: lib, now=NOW)
@@ -102,18 +103,18 @@ def test_pool_is_the_playlist_and_history_decides_buckets(tmp_path):
 
 
 def test_download_command_is_the_ymp3_alias_limited_to_missing_items(tmp_path):
-    cfg = Config(download_dir=str(tmp_path / "dl"), cookies_file="~/cookies.txt")
+    cfg = Config(music_dir=str(tmp_path / "dl"), cookies_file="~/cookies.txt")
     cmd = acquire.playlist_download_command(cfg, "https://pl", [7, 2, 12])
     assert cmd[0] == "yt-dlp" and cmd[1:3] == ["--cookies", str(Path("~/cookies.txt").expanduser())]
     assert "--embed-thumbnail" in cmd and "playlist_index:%(track_number)s" in cmd
     assert cmd[-3:] == ["--playlist-items", "2,7,12", "https://pl"][-3:] or cmd[-1] == "https://pl"
     i = cmd.index("--playlist-items")
     assert cmd[i + 1] == "2,7,12" and cmd[-1] == "https://pl"
-    assert any(str(tmp_path / "dl") in part for part in cmd)  # --output points at download_dir
+    assert any(str(tmp_path / "dl") in part for part in cmd)  # --output points into music_dir
 
 
 def test_download_missing_asks_and_reports(tmp_path):
-    cfg = Config(download_dir=str(tmp_path))
+    cfg = Config(music_dir=str(tmp_path))
     ran = []
     class R:
         returncode = 0
@@ -146,9 +147,9 @@ def wish(artist, title, score=1.0):
     return Candidate(artist, title, score, {"rec"})
 
 
-def test_fetch_wishes_downloads_with_watch_url_and_auto_dir_and_remembers(tmp_path):
+def test_fetch_wishes_downloads_with_watch_url_into_the_library_and_remembers(tmp_path):
     db = history.connect(tmp_path / "h.db")
-    cfg = Config(auto_dir=str(tmp_path / "auto"))
+    cfg = Config(music_dir=str(tmp_path / "lib"))
     ran = []
 
     class R:
@@ -160,7 +161,8 @@ def test_fetch_wishes_downloads_with_watch_url_and_auto_dir_and_remembers(tmp_pa
     n = acquire.fetch_wishes(cfg, db, wishes, 2, search, run, now=1000)
     assert n == 1 and len(ran) == 1  # "Two" and "Three" are not on YouTube Music, and did not eat the quota of 2
     assert ran[0][-1] == "https://music.youtube.com/watch?v=v1"
-    assert str(tmp_path / "auto") in ran[0][ran[0].index("--output") + 1]
+    out = ran[0][ran[0].index("--output") + 1]
+    assert out.startswith(str(tmp_path / "lib")) and "%(album|Singles)s" in out  # same single library folder
     # next sync: "One" is done for good, the misses wait 30 days
     assert acquire.fetch_wishes(cfg, db, wishes, 5, search, run, now=2000) == 0 and len(ran) == 1
     later = fake_search({"B Two": [song("v2", "B", "Two")]})
@@ -169,7 +171,7 @@ def test_fetch_wishes_downloads_with_watch_url_and_auto_dir_and_remembers(tmp_pa
 
 def test_fetch_wishes_stops_at_the_quota(tmp_path):
     db = history.connect(tmp_path / "h.db")
-    cfg = Config(auto_dir=str(tmp_path / "auto"))
+    cfg = Config(music_dir=str(tmp_path / "lib"))
 
     class R:
         returncode = 0
@@ -182,7 +184,7 @@ def test_fetch_wishes_stops_at_the_quota(tmp_path):
 
 def test_fetch_wishes_respects_ask_and_failures(tmp_path):
     db = history.connect(tmp_path / "h.db")
-    cfg = Config(auto_dir=str(tmp_path / "auto"))
+    cfg = Config(music_dir=str(tmp_path / "lib"))
     search = fake_search({"A One": [song("v1", "A", "One")]})
 
     class Bad:
@@ -195,16 +197,15 @@ def test_fetch_wishes_respects_ask_and_failures(tmp_path):
     assert db.execute("SELECT status FROM wish_attempts").fetchone()["status"] == "failed"
 
 
-def test_sync_fetches_wishes_and_pool_includes_auto_dir_without_touching_playlist(tmp_path):
+def test_sync_fetches_wishes_into_the_library_and_they_join_the_pool(tmp_path):
     from swimscrobble.taste import Taste
 
     db = history.connect(tmp_path / "h.db")
     db.executemany("INSERT INTO scrobbles VALUES(?,?,?)", [(int(NOW) - 86400 * d, "Loved Band", "Big Hit") for d in (1, 2, 3)])
     db.commit()
     cfg = make_cfg(tmp_path)
-    cfg.auto_dir = str(tmp_path / "auto")
     cfg.ytm_playlist = "https://music.youtube.com/playlist?list=P"
-    (tmp_path / "auto").mkdir()
+    cfg.pool = "playlist"  # even with a playlist-only pool, fetched wishlist files must be usable
     playlist_track = T("Closterkeller", "Sansara", name=str(tmp_path / "pl.mp3"))
     lib = [playlist_track]
     entries = [Entry("1", "Closterkeller", "Sansara", 200, 1)]
@@ -212,7 +213,8 @@ def test_sync_fetches_wishes_and_pool_includes_auto_dir_without_touching_playlis
 
     def fetch(wishes):
         fetched.append([w.title for w in wishes])
-        lib.append(T("Loved Band", "Big Hit", name=str(tmp_path / "auto" / "Loved Band - Big Hit.mp3")))
+        db.execute("INSERT INTO wish_attempts VALUES('loved band|big hit', 'ok', 1)")
+        lib.append(T("Loved Band", "Big Hit", name=str(tmp_path / "Singles" / "Loved Band - Big Hit.mp3")))
         return 1
 
     rep = sync_library(cfg, db, fetch_playlist=lambda u: entries, taste_fetch=lambda *a: Taste(),

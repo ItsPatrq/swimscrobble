@@ -48,7 +48,7 @@ def playlist_download_command(
     """The user's `ymp3` command, optionally limited to playlist positions (--playlist-items)."""
     subs = {
         "cookies": str(Path(cfg.cookies_file).expanduser()),
-        "download_dir": str(Path(cfg.download_dir).expanduser()),
+        "download_dir": str(cfg.music_path),
     }
     cmd = [part.format(**subs) for part in cfg.download_command]
     if output and "--output" in cmd:
@@ -64,7 +64,7 @@ def download_missing(
     """Download only the missing playlist positions with the configured command. True if it ran OK."""
     if not missing:
         return True
-    if ask and ask(f"Download {len(missing)} missing tracks into {cfg.download_dir}? [y/N] ").strip().lower() != "y":
+    if ask and ask(f"Download {len(missing)} missing tracks into {cfg.music_dir}? [y/N] ").strip().lower() != "y":
         return False
     return run(playlist_download_command(cfg, url, [e.index for e in missing if e.index])).returncode == 0
 
@@ -102,7 +102,7 @@ def fetch_wishes(
     ask: Callable[[str], str] | None = None,
     now: float | None = None,
 ) -> int:
-    """Download up to `limit` wishlist tracks into cfg.auto_dir. Remembers outcomes so nothing
+    """Download up to `limit` wishlist tracks into the library folder (cfg.music_dir). Remembers outcomes so nothing
     that was not found (or already fetched) is retried on every sync. Returns the number fetched."""
     import time
 
@@ -120,9 +120,9 @@ def fetch_wishes(
             break
     if not todo:
         return 0
-    if ask and ask(f"Download up to {limit} of {len(todo)} wishlist tracks into {cfg.auto_dir}? [y/N] ").strip().lower() != "y":
+    if ask and ask(f"Download up to {limit} of {len(todo)} wishlist tracks into {cfg.music_dir}? [y/N] ").strip().lower() != "y":
         return 0
-    out = str(cfg.auto_path / "%(artist,channel)s - %(title)s.%(ext)s")
+    out = str(cfg.music_path / "%(album|Singles)s" / "%(artist,channel)s - %(title)s.%(ext)s")
     fetched = 0
     for key, w in todo:
         if fetched >= limit:
@@ -136,3 +136,12 @@ def fetch_wishes(
         db.commit()
         fetched += status == "ok"
     return fetched
+
+
+def fetched_wishes(db) -> list[tuple[str, str]]:
+    """(artist, title) of every wishlist track downloaded so far, in normalised spelling."""
+    out = []
+    for r in db.execute("SELECT key FROM wish_attempts WHERE status='ok'"):
+        artist, _, title = r["key"].partition("|")
+        out.append((artist, title))
+    return out

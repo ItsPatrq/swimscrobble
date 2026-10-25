@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from . import history, lfhistory, poolsync
+from .acquire import fetched_wishes
 from .buckets import assign
 from .config import Config
 from .library import Track, scan
@@ -59,12 +60,13 @@ def sync_library(
     when = now if now is not None else time.time()
 
     def judge():
-        """Pool first (playlist + auto-fetched files), then check each track against the history."""
+        """Pool first (the library folder, or just the playlist tracks), then check each against the history."""
         idx = LocalIndex(library)
         pool = None
         if cfg.pool == "playlist" and entries:
             pool = {key(t) for e in entries if (t := idx.find(e.artist, e.title, e.duration))}
-            pool |= {key(t) for t in library if t.path.is_relative_to(cfg.auto_path)}
+            # tracks fetched from the wishlist belong to the pool too, whether or not they are in a playlist
+            pool |= {key(t) for a, ti in fetched_wishes(db) if (t := idx.find(a, ti))}
         taste = None
         if cfg.lastfm_user:
             if history_sync and not synced:
