@@ -113,8 +113,8 @@ def plan_and_stage(
     clear_staged(stage_dir, previous)
     plan = build_mix(
         library, pool_candidates(db), feature_of or (lambda t: cached_features(db, t)),
-        minutes=cfg.playlist_minutes, seed=seed, quotas=cfg.mix_weights, min_energy=cfg.min_energy,
-        max_per_artist=cfg.max_per_artist,
+        minutes=cfg.playlist_minutes, swim_minutes=cfg.minutes, seed=seed, quotas=cfg.mix_weights,
+        min_energy=cfg.min_energy, max_per_artist=cfg.max_per_artist, variety=cfg.variety,
         plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
     )
     for p in plan:

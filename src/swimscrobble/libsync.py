@@ -5,7 +5,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from . import history, lfhistory, poolsync
+from . import affinity, history, poolsync
 from .acquire import fetched_wishes
 from .buckets import assign
 from .config import Config
@@ -72,16 +72,13 @@ def sync_library(
             if history_sync and not synced:
                 history_sync()
                 synced.append(1)
-            st = lfhistory.stats(db, now)
-            recent = sorted((kv for kv in st.items() if kv[1].p30), key=lambda kv: -kv[1].p30)
-            artists: dict[str, int] = {}
-            for (a, _), s in recent:
-                artists[a] = artists.get(a, 0) + s.p30
+            tracks, artists = affinity.compute(db, when)
+            recent = sorted((kv for kv in tracks.items() if kv[1].now > 0.5), key=lambda kv: -kv[1].now)
+            hot = sorted((kv for kv in artists.items() if kv[1].now > 0.5), key=lambda kv: -kv[1].now)
             if taste_fetch:
-                taste = taste_fetch(cfg.lastfm_user, [k for k, _ in recent[:10]],
-                                    sorted(artists, key=lambda a: -artists[a]))
-            return assign(taste, st, library, pool, idx, when)
-        return assign(None, {}, library, pool, idx, when)  # no history: everything is "discovery"
+                taste = taste_fetch(cfg.lastfm_user, [k for k, _ in recent[:10]], [a for a, _ in hot])
+            return assign(taste, tracks, artists, library, pool, idx, when)
+        return assign(None, {}, {}, library, pool, idx, when)  # no history: everything is "discovery"
 
     synced: list[int] = []
     owned, wanted = judge()

@@ -49,7 +49,8 @@ class Config:
         "lost": 0.10,       # loved / heavily played all-time, silent 90+ days
         "rec": 0.20,        # similar tracks and top tracks of your genres
     })
-    max_per_artist: int = 3
+    max_per_artist: int = 4  # hard safety cap; the DPP already spreads artists
+    variety: float = 2.5  # randomness of the selection (0 = always the single best set); tuned on real data
     min_energy: float = 0.5  # drop slow/ballad tracks below this energy (0..1)
     volumes_dir: str = "/Volumes"
     stage_subdir: str = ""  # under the device music folder; "" = its root

@@ -26,6 +26,8 @@ class Features:
     onset: float
     pulse: float
     energy: float
+    bright: float = 0.5  # spectral centroid, 0 (dark) .. 1 (bright)
+    bass: float = 0.25  # share of spectral energy below 200 Hz
 
 
 def decode(path: Path, duration: float, run: Callable = subprocess.run) -> np.ndarray:
@@ -38,15 +40,33 @@ def decode(path: Path, duration: float, run: Callable = subprocess.run) -> np.nd
     return np.frombuffer(proc.stdout, dtype=np.float32)
 
 
-def onset_envelope(x: np.ndarray) -> np.ndarray:
-    """Positive spectral flux of the log-magnitude spectrogram."""
+def spectrogram(x: np.ndarray) -> np.ndarray:
     n = 1 + (len(x) - WIN) // HOP
     if n < 8:
-        return np.zeros(1)
+        return np.zeros((0, WIN // 2 + 1))
     idx = np.arange(WIN)[None, :] + HOP * np.arange(n)[:, None]
-    mag = np.abs(np.fft.rfft(x[idx] * np.hanning(WIN), axis=1))
-    logm = np.log1p(100 * mag)
-    return np.maximum(np.diff(logm, axis=0), 0).sum(axis=1)
+    return np.abs(np.fft.rfft(x[idx] * np.hanning(WIN), axis=1))
+
+
+def onset_from_mag(mag: np.ndarray) -> np.ndarray:
+    """Positive spectral flux of the log-magnitude spectrogram."""
+    if len(mag) < 8:
+        return np.zeros(1)
+    return np.maximum(np.diff(np.log1p(100 * mag), axis=0), 0).sum(axis=1)
+
+
+def onset_envelope(x: np.ndarray) -> np.ndarray:
+    return onset_from_mag(spectrogram(x))
+
+
+def timbre(mag: np.ndarray) -> tuple[float, float]:
+    """(brightness 0..1, bass share) averaged over the clip."""
+    if len(mag) == 0:
+        return 0.5, 0.25
+    freqs = np.fft.rfftfreq(WIN, 1 / SR)
+    total = mag.sum() or 1.0
+    centroid = float((mag * freqs).sum() / total)
+    return _ramp(centroid, 500, 3500), float(mag[:, freqs < 200].sum() / total)
 
 
 def estimate_bpm(env: np.ndarray, lo: float = 70, hi: float = 180) -> tuple[float, float]:
@@ -85,22 +105,26 @@ def analyse_samples(x: np.ndarray, tag_bpm: float | None = None) -> Features:
         return Features(0.0, -60.0, 0.0, 0.0, 0.0)
     rms = float(np.sqrt(np.mean(x.astype(np.float64) ** 2)))
     loud = 20 * np.log10(max(rms, 1e-6))
-    env = onset_envelope(x)
+    mag = spectrogram(x)
+    env = onset_from_mag(mag)
+    bright, bass = timbre(mag)
     est_bpm, pulse = estimate_bpm(env)
     bpm = tag_bpm or est_bpm
     onset = _ramp(float(env.mean()), 130, 180)
     energy = (
         tempo_score(bpm) + _ramp(loud, -20, -6) + onset + _ramp(pulse, 0.2, 0.7)
     ) / 4
-    return Features(round(bpm, 1), round(loud, 1), round(float(env.mean()), 1), round(pulse, 2), round(energy, 3))
+    return Features(round(bpm, 1), round(loud, 1), round(float(env.mean()), 1), round(pulse, 2), round(energy, 3),
+                    round(bright, 3), round(bass, 3))
 
 
 def analyse_file(path: Path, duration: float, tag_bpm: float | None = None, run: Callable = subprocess.run) -> Features:
     return analyse_samples(decode(path, duration, run), tag_bpm)
 
 
-SCHEMA = """CREATE TABLE IF NOT EXISTS features_v2(
-  path TEXT PRIMARY KEY, mtime REAL, bpm REAL, loudness REAL, onset REAL, pulse REAL, energy REAL)"""
+SCHEMA = """CREATE TABLE IF NOT EXISTS features_v3(
+  path TEXT PRIMARY KEY, mtime REAL, bpm REAL, loudness REAL, onset REAL, pulse REAL, energy REAL,
+  bright REAL, bass REAL)"""
 
 
 def cached_features(db, track, analyse: Callable[..., Features] = analyse_file) -> Features:
@@ -108,12 +132,12 @@ def cached_features(db, track, analyse: Callable[..., Features] = analyse_file) 
     db.execute(SCHEMA)
     path = Path(track.path)
     mtime = path.stat().st_mtime
-    row = db.execute("SELECT * FROM features_v2 WHERE path=? AND mtime=?", (str(path), mtime)).fetchone()
+    row = db.execute("SELECT * FROM features_v3 WHERE path=? AND mtime=?", (str(path), mtime)).fetchone()
     if row:
-        return Features(row["bpm"], row["loudness"], row["onset"], row["pulse"], row["energy"])
+        return Features(row["bpm"], row["loudness"], row["onset"], row["pulse"], row["energy"], row["bright"], row["bass"])
     f = analyse(path, track.duration, track.bpm)
-    db.execute("INSERT OR REPLACE INTO features_v2 VALUES(?,?,?,?,?,?,?)",
-        (str(path), mtime, f.bpm, f.loudness_db, f.onset, f.pulse, f.energy),
+    db.execute("INSERT OR REPLACE INTO features_v3 VALUES(?,?,?,?,?,?,?,?,?)",
+        (str(path), mtime, f.bpm, f.loudness_db, f.onset, f.pulse, f.energy, f.bright, f.bass),
     )
     db.commit()
     return f

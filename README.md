@@ -12,24 +12,24 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
      in it is eligible; playlist tracks and wishlist tracks are downloaded into it, and the playlist(s)
      (`ytm_playlist` / `ytm_playlists`) are just another source of downloads. Set `pool = "playlist"` to
      restrict the session to playlist tracks (plus wishlist downloads).
-   - **Then check each against your Last.fm history**, which is mirrored locally (the last
-     `history_days`, then updated incrementally), so the answers are exact. Five buckets, each with a share of the
+   - **Then check each against your Last.fm history**, mirrored locally (the last `history_days`, then
+     updated incrementally). Recency-decayed play counts (chosen by offline evaluation, see
+     [docs/ALGORITHM.md](docs/ALGORITHM.md)) put every track in one of five buckets, each with a share of the
      time (`mix_weights`):
-     - **obsession** (40%): played in the last 30 days;
-     - **mid** (15%): played 30-90 days ago and dropped since;
+     - **obsession** (40%): by an artist you are into right now, any of their tracks, played or not;
+     - **mid** (15%): played within the last 90 days;
      - **fresh** (15%): never played, but by an artist you do listen to;
      - **lost** (10%): played or loved long ago, silent for 90+ days;
      - **rec** (20%): never played, by artists you have not played either (discovery), boosted when
        Last.fm calls them similar to your recent obsession or in your genres.
-   A bucket that comes up short hands its time to the others. Within a bucket tracks are drawn at
-   random (taste is flattened so the same favourites do not win every time), at most 3 per artist
-   (`max_per_artist`).
+   - **Selection**: a determinantal point process picks relevant tracks that are also *different* from each
+     other (sound and artist), different every run (`variety`), steered towards the bucket shares.
+   - **Sequence**: an optimiser orders them as a workout: warm-up, a few surges, a small taper over the swim
+     window, smooth tempo and energy transitions, no artist twice in a row.
    - *Energy*: every file is analysed locally (tempo, loudness, onset density, pulse clarity; cached).
      Tracks below `min_energy` (default 0.5, i.e. slow ballads and ambient pieces) are dropped, and
      high-energy tracks are drawn more often. This applies to every bucket, including lost gems.
-   - *Order*: a randomised walk that avoids big energy jumps, back-to-back artists and long runs of
-     one bucket. Tracks you swam to in the last `no_repeat_days` are skipped, and heavily swum ones
-     fade out.
+   - *Rest*: tracks you swam to in the last `no_repeat_days` are skipped, and heavily swum ones fade out.
    - *Wishlist, no playlist upkeep needed*: tracks you play a lot (or Last.fm suggests) but have no
      file for are looked up on YouTube Music (songs only; the title and artist must both match, so no
      covers or live versions) and downloaded, up to `auto_fetch` (default 20) per sync, into the same
@@ -74,7 +74,8 @@ lastfm_user = "yourname"
 listenbrainz = false
 arc = false                  # (plain `plan` only) warm-up -> peak -> cool-down by BPM tag
 mix_weights = { obsession = 0.40, mid = 0.15, fresh = 0.15, lost = 0.10, rec = 0.20 }
-max_per_artist = 3
+max_per_artist = 4           # soft cap; the selection already spreads artists
+variety = 2.5                # randomness of the selection
 min_energy = 0.5             # 0..1; raise to cut more mid-tempo tracks
 max_podcasts = 10
 no_repeat_days = 7
@@ -88,6 +89,7 @@ no_repeat_days = 7
 | `plan [dir] --stage DIR` | plain shuffle without taste or energy, for comparison |
 | `scrobble session.json --start ISO [--played-minutes N] [--skip 3,7] [--confirm] [--submit]` | CSV by default; `--submit` sends to Last.fm |
 | `scrobble-pending` | scrobble the last staged session (start inferred from now) |
+| `eval` | replay your Last.fm history and score the models behind the playlist (reproduces docs/ALGORITHM.md) |
 | `lastfm-auth` | one-time Last.fm authorisation (`LASTFM_API_KEY`/`LASTFM_API_SECRET`) |
 | `playlist [url] [--download]` | list which playlist tracks exist under `music_dir`; `--download` fetches the missing ones |
 | `sync [--download [--yes]] [--fetch-missing N]` | refresh the swim pool: Last.fm 30/60/90-day charts, all-time top/loved, similar tracks, artist and genre top tracks, plus the playlist; optionally offer to download N wanted tracks you don't have yet |

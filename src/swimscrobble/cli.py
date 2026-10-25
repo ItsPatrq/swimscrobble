@@ -208,8 +208,8 @@ def cmd_mix(a) -> None:
     library = _scan(cfg, a.music)
     plan = build_mix(
         library, flow.pool_candidates(db), lambda t: cached_features(db, t),
-        minutes=a.playlist_minutes or cfg.playlist_minutes, seed=a.seed, quotas=cfg.mix_weights,
-        min_energy=a.min_energy or cfg.min_energy, max_per_artist=cfg.max_per_artist,
+        minutes=a.playlist_minutes or cfg.playlist_minutes, swim_minutes=swim, seed=a.seed, quotas=cfg.mix_weights,
+        min_energy=a.min_energy or cfg.min_energy, max_per_artist=cfg.max_per_artist, variety=cfg.variety,
         plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
     )
     n_scrobbles = db.execute("SELECT COUNT(*) c FROM scrobbles").fetchone()["c"]
@@ -230,6 +230,26 @@ def cmd_mix(a) -> None:
         for p in plan:
             shutil.copy2(p.track.path, dest / p.staged_name)
         print(f"staged {len(plan)} files into {dest}")
+
+
+def cmd_eval(a) -> None:
+    """Replay your history: how well do the scoring models predict what you played next?"""
+    from . import evaluate
+
+    db = history.connect()
+    if not db.execute("SELECT 1 FROM scrobbles LIMIT 1").fetchone():
+        raise SystemExit("no Last.fm history yet: run `swimscrobble sync` first")
+    print("Repeat listening: rank tracks played in the last 2 years, hit = played in the next 30 days")
+    repeat = evaluate.evaluate_models(db, evaluate.REPEAT_MODELS)
+    for name, (rec, ndcg, n) in sorted(repeat.items(), key=lambda kv: -kv[1][1]):
+        print(f"  {name:32s} recall@100 {rec:.3f}  ndcg@100 {ndcg:.3f}  ({n} cutoffs)")
+    print("\nLost gems: tracks with 4+ plays silent for 90+ days, hit = comes back within 30 days")
+    gems = evaluate.evaluate_models(db, evaluate.GEM_MODELS, gems=True)
+    for name, (prec, ndcg, n) in sorted(gems.items(), key=lambda kv: -kv[1][1]):
+        print(f"  {name:32s} precision@50 {prec:.3f}  ndcg@50 {ndcg:.3f}  ({n} cutoffs)")
+    print("\nNew-to-you tracks per 30 days, by how well you already knew the artist:")
+    for name, v in evaluate.new_track_artist_coverage(db).items():
+        print(f"  {name:36s} {v:.0%}")
 
 
 def cmd_podcasts(a) -> None:
@@ -313,6 +333,8 @@ def main(argv=None) -> None:
     mx.add_argument("--out", default="session.json")
     mx.add_argument("--stage")
     mx.set_defaults(func=cmd_mix)
+
+    sub.add_parser("eval", help="replay your Last.fm history to evaluate the scoring models").set_defaults(func=cmd_eval)
 
     sub.add_parser("lastfm-auth", help="authorise on Last.fm").set_defaults(func=cmd_lastfm_auth)
 

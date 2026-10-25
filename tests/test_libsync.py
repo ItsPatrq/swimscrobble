@@ -92,7 +92,7 @@ def test_pool_is_the_playlist_and_history_decides_buckets(tmp_path):
     rep = sync_library(cfg, db, fetch_playlist=lambda u: [e for e in entries], taste_fetch=taste,
                        history_sync=lambda: syncs.append(1), library_loader=lambda: lib, now=NOW)
     pool = {(r["artist"], r["title"]): r["source"] for r in db.execute("SELECT artist, title, source FROM pool")}
-    assert pool == {("closterkeller", "białe wino"): "obsession", ("nin", "closer"): "rec"}  # keyed by LOCAL tags
+    assert pool == {("closterkeller", "białe wino"): "mid", ("nin", "closer"): "rec"}  # keyed by LOCAL tags; 1 play = mid
     assert ("not in playlist", "hidden") not in pool  # outside the playlist: not eligible
     assert syncs == [1] and seeds == [([("Closterkeller", "Biale wino")], ["Closterkeller"])]
     assert rep.playlist_total == 4  # two playlists configured (ytm_playlist + ytm_playlists), 2 entries each
@@ -221,7 +221,7 @@ def test_sync_fetches_wishes_into_the_library_and_they_join_the_pool(tmp_path):
                        library_loader=lambda: list(lib), fetch_wishes=fetch, now=NOW)
     assert fetched == [["Big Hit"]]  # played last month on Last.fm, no file, not in the playlist -> fetched
     pool = {(r["artist"], r["title"]): r["source"] for r in db.execute("SELECT artist, title, source FROM pool")}
-    assert pool[("loved band", "big hit")] == "obsession" and ("closterkeller", "sansara") in pool
+    assert pool[("loved band", "big hit")] == "mid" and ("closterkeller", "sansara") in pool
     assert rep.pool.missing == []  # nothing left on the wishlist after the fetch
 
 
