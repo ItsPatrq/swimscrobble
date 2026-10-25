@@ -61,3 +61,13 @@ def load(path: Path | None = None) -> Config:
     if unknown:
         raise SystemExit(f"unknown config keys in {path}: {sorted(unknown)}")
     return Config(**data)
+
+
+def secret(name: str) -> str | None:
+    """Env var first, then ~/.config/swimscrobble/secrets.toml (launchd does not inherit shell env)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    f = config_dir() / "secrets.toml"
+    if f.exists():
+        return tomllib.loads(f.read_text()).get(name)
+    return None

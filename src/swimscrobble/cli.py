@@ -125,11 +125,10 @@ def cmd_playlist(a) -> None:
         print(f"{len(missing) - len(failed)} downloaded, {len(failed)} failed")
 
 
-def cmd_sync(a) -> None:
-    from . import acquire, generator, poolsync, taste, ytm
+def run_sync(cfg, db, size: int = 150):
+    """Refresh the swim pool from the playlist + Last.fm taste. Returns the SyncReport."""
+    from . import generator, poolsync, taste, ytm
 
-    cfg = cfgmod.load()
-    db = history.connect()
     library = scan(cfg.music_path)
     lib_keys = {generator.key(t.artist, t.title) for t in library}
     playlist = []
@@ -142,7 +141,14 @@ def cmd_sync(a) -> None:
         for artist, title, _ in top[:10]:  # recommendations seeded by what you played most lately
             sim += taste.similar(artist, title)
     cands = generator.score_candidates(playlist, loved, top, sim)
-    rep = poolsync.sync_pool(db, cands, lib_keys, history.play_counts(db), a.size)
+    return poolsync.sync_pool(db, cands, lib_keys, history.play_counts(db), size)
+
+
+def cmd_sync(a) -> None:
+    from . import acquire
+
+    cfg = cfgmod.load()
+    rep = run_sync(cfg, history.connect(), a.size)
     print(f"added {len(rep.added)}, retired {len(rep.retired)}, wanted-but-missing {len(rep.missing)}")
     for c in rep.missing[:20]:
         print(f"  missing ({','.join(sorted(c.sources))}): {c.artist} - {c.title}")
@@ -200,7 +206,13 @@ def cmd_on_connect(a) -> None:
         sync = lambda: pocketcasts.sync_queue(  # noqa: E731
             pocketcasts.up_next(pocketcasts.saved_token()),
             cfg.device_path / cfg.device_podcast_subdir, db, cfg.max_podcasts)
-    for line in flow.on_connect(cfg, db, notify=notify, podcast_sync=sync):
+    def pool_sync():
+        if not (cfg.lastfm_user or cfg.ytm_playlist):
+            return "skipped (no lastfm_user / ytm_playlist configured)"
+        rep = run_sync(cfg, db)
+        return f"+{len(rep.added)} -{len(rep.retired)}, {len(rep.missing)} wanted but missing"
+
+    for line in flow.on_connect(cfg, db, notify=notify, podcast_sync=sync, pool_sync=pool_sync):
         print(line)
 
 

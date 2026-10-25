@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+
+from .config import secret
 
 API_URL = "https://ws.audioscrobbler.com/2.0/"
 Transport = Callable[[dict], dict]
@@ -17,7 +18,7 @@ def http_get(params: dict) -> dict:
 
 
 def _get(method: str, transport: Transport, **params) -> dict:
-    key = os.environ.get("LASTFM_API_KEY")
+    key = secret("LASTFM_API_KEY")
     if not key:
         raise SystemExit("set LASTFM_API_KEY")
     resp = transport({"method": method, "api_key": key, "format": "json", **params})

@@ -95,3 +95,13 @@ def test_history_session_lifecycle(tmp_path):
     with pytest.raises(ValueError):
         history.mark_scrobbled(db, sid, [])
     assert history.play_counts(db)[("a", "t")] == 1
+
+
+def test_secret_reads_env_then_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWIMSCROBBLE_HOME", str(tmp_path))
+    monkeypatch.delenv("MY_SECRET", raising=False)
+    assert config.secret("MY_SECRET") is None
+    (tmp_path / "secrets.toml").write_text('MY_SECRET = "from-file"\n')
+    assert config.secret("MY_SECRET") == "from-file"
+    monkeypatch.setenv("MY_SECRET", "from-env")
+    assert config.secret("MY_SECRET") == "from-env"

@@ -5,7 +5,6 @@ Pocket Casts does not support third-party clients; use your own account at your 
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import urllib.request
@@ -13,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
-from .config import config_dir
+from .config import config_dir, secret
 
 API = "https://api.pocketcasts.com"
 TOKEN_FILE = "pocketcasts.json"
@@ -39,8 +38,8 @@ def http_download(url: str, dest: Path) -> None:
 
 
 def login(email: str | None = None, password: str | None = None, transport: Transport = http_post) -> str:
-    email = email or os.environ.get("POCKETCASTS_EMAIL")
-    password = password or os.environ.get("POCKETCASTS_PASSWORD")
+    email = email or secret("POCKETCASTS_EMAIL")
+    password = password or secret("POCKETCASTS_PASSWORD")
     if not email or not password:
         raise SystemExit("set POCKETCASTS_EMAIL and POCKETCASTS_PASSWORD")
     token = transport("/user/login", {"email": email, "password": password}, None)["token"]

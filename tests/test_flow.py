@@ -115,3 +115,14 @@ def test_launchd_plist_and_install(tmp_path):
     assert p.exists() and calls[-1][:3] == ["launchctl", "bootstrap", "gui/501"]
     launchd.uninstall(501, p, lambda cmd, **kw: calls.append(cmd))
     assert not p.exists()
+
+
+def test_pool_sync_runs_and_failure_does_not_block(env):
+    cfg, db, lib, _ = env
+    log, _ = run(cfg, db, lib, pool_sync=lambda: "+3 -0")
+    assert "pool: +3 -0" in log and any("staged session" in x for x in log)
+    flow._set_handled(False)
+    def bad(): raise RuntimeError("lastfm down")
+    cfg.auto_submit = True  # settle the first session so the second connection reaches the pool step
+    log, _ = run(cfg, db, lib, now=datetime(2026, 10, 25, 12), pool_sync=bad, lastfm_submit=len)
+    assert any("pool sync failed" in x for x in log)

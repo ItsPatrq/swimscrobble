@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.request
 from collections.abc import Callable
 
+from .config import secret
 from .scrobble import Scrobble
 
 URL = "https://api.listenbrainz.org/1/submit-listens"
@@ -43,7 +43,7 @@ def build_payload(scrobbles: list[Scrobble]) -> dict:
 
 
 def submit(scrobbles: list[Scrobble], token: str | None = None, transport: Transport = http_post) -> int:
-    token = token or os.environ.get("LISTENBRAINZ_TOKEN")
+    token = token or secret("LISTENBRAINZ_TOKEN")
     if not token:
         raise SystemExit("set LISTENBRAINZ_TOKEN (https://listenbrainz.org/settings/)")
     sent = 0

@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from .config import secret
 from .scrobble import Scrobble
 
 API_URL = "https://ws.audioscrobbler.com/2.0/"
@@ -44,10 +44,10 @@ def _call(method: str, params: dict, key: str, secret: str, transport: Transport
 
 
 def credentials() -> tuple[str, str]:
-    key, secret = os.environ.get("LASTFM_API_KEY"), os.environ.get("LASTFM_API_SECRET")
-    if not key or not secret:
+    key, shared = secret("LASTFM_API_KEY"), secret("LASTFM_API_SECRET")
+    if not key or not shared:
         raise SystemExit("set LASTFM_API_KEY and LASTFM_API_SECRET (https://www.last.fm/api/account/create)")
-    return key, secret
+    return key, shared
 
 
 def authenticate(transport: Transport = http_post, wait: Callable[[str], None] = input) -> str:

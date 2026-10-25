@@ -131,6 +131,7 @@ def on_connect(
     library_loader: Callable[[Path], list[Track]] = scan,
     feature_of: Callable[[Track], Features] | None = None,
     podcast_sync: Callable[[], dict] | None = None,
+    pool_sync: Callable[[], str] | None = None,
     **deps,
 ) -> list[str]:
     now = now or datetime.now()
@@ -152,6 +153,12 @@ def on_connect(
             log.append(f"podcasts: {podcast_sync()}")
         except Exception as e:
             log.append(f"podcasts failed: {e}")
+
+    if pool_sync:  # a failed refresh must never block staging; the old pool still works
+        try:
+            log.append(f"pool: {pool_sync()}")
+        except Exception as e:
+            log.append(f"pool sync failed: {e}")
 
     prev_row = db.execute("SELECT manifest FROM sessions WHERE staged_dir IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
     previous = json.loads(prev_row["manifest"]) if prev_row else None
