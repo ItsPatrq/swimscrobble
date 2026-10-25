@@ -73,15 +73,18 @@ def test_download_failure_leaves_entries_missing(tmp_path):
     assert [e.index for e in rep.playlist_missing] == [1] and rep.downloaded
 
 
-def test_lastfm_tracks_rekeyed_to_local_files(tmp_path):
+def test_lastfm_tracks_bucketed_onto_local_files(tmp_path):
+    from swimscrobble.taste import Taste
+
     db = history.connect(tmp_path / "h.db")
     lib = [T("Closterkeller", "Białe wino"), T("NIN", "Closer")]
-    taste = lambda user, period: (  # noqa: E731
-        [("Closterkeller", "Biale wino")], [("NIN", "Closer", 30)], [("Unknown Band", "Rec Song", 0.8), ("NIN", "Closer", 0.5)]
+    taste = lambda user: Taste(  # noqa: E731
+        chart30=[("Closterkeller", "Biale wino", 7)],
+        similar=[("NIN", "Closer", 0.5), ("Unknown Band", "Rec Song", 0.8)],
     )
     rep = sync_library(make_cfg(tmp_path), db, fetch_playlist=lambda u: [], taste_fetch=taste, library_loader=lambda: lib)
     pool = {(r["artist"], r["title"]): r["source"] for r in db.execute("SELECT artist, title, source FROM pool")}
-    assert set(pool) == {("closterkeller", "białe wino"), ("nin", "closer")}  # keyed by the LOCAL tags
+    assert pool == {("closterkeller", "białe wino"): "obsession", ("nin", "closer"): "rec"}  # keyed by LOCAL tags
     assert [c.title for c in rep.pool.missing] == ["Rec Song"]  # recommended but not owned
 
 

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import subprocess
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def cmd_plan(a) -> None:
     cfg = cfgmod.load()
     tracks = _scan(cfg, a.music)
     swim = a.minutes or cfg.minutes
-    plan = plan_session(tracks, swim * cfg.buffer_factor, a.seed, arc=cfg.arc)
+    plan = plan_session(tracks, a.playlist_minutes or cfg.playlist_minutes, a.seed, arc=cfg.arc)
     for p in plan:
         print(f"{p.position:03d}  {_fmt(p.track.duration)}  {p.track.artist} - {p.track.title}")
     print(f"\n{len(plan)} tracks, {_fmt(total_seconds(plan))}")
@@ -138,23 +139,12 @@ def cmd_playlist(a) -> None:
         print("done; re-run to verify" if ok else "download skipped/failed")
 
 
-def _taste_fetch(user: str, period: str):
-    from . import taste
-
-    top = taste.top_tracks(user, period=period)
-    loved = taste.loved_tracks(user)
-    sim = []
-    for artist, title, _ in top[:10]:  # recommendations seeded by what you played most lately
-        sim += taste.similar(artist, title)
-    return loved, top, sim
-
-
-def run_sync(cfg, db, size: int = 150, download: str | bool = False):
+def run_sync(cfg, db, size: int = 1000, download: str | bool = False):
     """Scan the library, match the playlist + Last.fm taste to it, refresh the pool.
 
     download: False = report only, "ask" = prompt first, True = fetch missing playlist tracks.
     """
-    from . import acquire, libsync, ytm
+    from . import acquire, libsync, taste, ytm
 
     def dl(missing):
         ask = input if download == "ask" else None
@@ -164,7 +154,7 @@ def run_sync(cfg, db, size: int = 150, download: str | bool = False):
     return libsync.sync_library(
         cfg, db, size=size,
         fetch_playlist=lambda url: ytm.fetch(url, cookies=cfg.cookies_path),
-        taste_fetch=_taste_fetch,
+        taste_fetch=lambda user: taste.fetch_taste(user),
         download=dl if download else None,
     )
 
@@ -200,13 +190,14 @@ def cmd_mix(a) -> None:
     library = _scan(cfg, a.music)
     plan = build_mix(
         library, flow.pool_candidates(db), lambda t: cached_features(db, t),
-        minutes=swim * cfg.buffer_factor, seed=a.seed, rec_ratio=cfg.rec_ratio, min_energy=a.min_energy or cfg.min_energy,
+        minutes=a.playlist_minutes or cfg.playlist_minutes, seed=a.seed, quotas=cfg.mix_weights,
+        min_energy=a.min_energy or cfg.min_energy, max_per_artist=cfg.max_per_artist,
         plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
     )
     for p in plan:
-        print(f"{p.position:03d}  {_fmt(p.track.duration)}  e={p.energy:.2f}  {p.source:3}  {p.track.artist} - {p.track.title}")
-    recs = sum(1 for p in plan if p.source == "rec")
-    print(f"\n{len(plan)} tracks ({recs} recommendations), {_fmt(total_seconds(plan))}")
+        print(f"{p.position:03d}  {_fmt(p.track.duration)}  e={p.energy:.2f}  {p.source:9}  {p.track.artist} - {p.track.title}")
+    mixes = Counter(p.source for p in plan)
+    print(f"\n{len(plan)} tracks, {_fmt(total_seconds(plan))}  " + "  ".join(f"{b}={n}" for b, n in mixes.most_common()))
     Path(a.out).write_text(json.dumps(to_manifest(plan, a.seed, swim), indent=2, ensure_ascii=False))
     if a.stage:
         import shutil
@@ -265,7 +256,8 @@ def main(argv=None) -> None:
 
     p = sub.add_parser("plan", help="build a randomised session")
     p.add_argument("music", nargs="?")
-    p.add_argument("--minutes", type=float)
+    p.add_argument("--minutes", type=float, help="swim length (what gets scrobbled)")
+    p.add_argument("--playlist-minutes", type=float, help="staged playlist length (default 120)")
     p.add_argument("--seed", type=int)
     p.add_argument("--out", default="session.json")
     p.add_argument("--stage", help="copy files here with position prefixes")
@@ -291,7 +283,8 @@ def main(argv=None) -> None:
 
     mx = sub.add_parser("mix", help="energising favourites + a few recommendations (uses pool, energy analysis)")
     mx.add_argument("music", nargs="?")
-    mx.add_argument("--minutes", type=float)
+    mx.add_argument("--minutes", type=float, help="swim length (what gets scrobbled)")
+    mx.add_argument("--playlist-minutes", type=float, help="staged playlist length (default 120)")
     mx.add_argument("--seed", type=int)
     mx.add_argument("--min-energy", type=float)
     mx.add_argument("--out", default="session.json")
@@ -306,7 +299,7 @@ def main(argv=None) -> None:
     pl.set_defaults(func=cmd_playlist)
 
     sy = sub.add_parser("sync", help="refresh the swim pool from playlist + Last.fm taste")
-    sy.add_argument("--size", type=int, default=150)
+    sy.add_argument("--size", type=int, default=1000)
     sy.add_argument("--download", action="store_true", help="download playlist tracks missing locally (asks first)")
     sy.add_argument("--yes", action="store_true", help="with --download: do not ask")
     sy.add_argument("--fetch-missing", type=int, default=0, metavar="N",

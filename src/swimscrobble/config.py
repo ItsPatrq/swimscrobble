@@ -30,8 +30,8 @@ class Config:
     device_name: str = "SWIM PRO"
     device_music_subdir: str = "Music"
     device_podcast_subdir: str = "PocketCast"
-    minutes: float = 60  # how long you swim
-    buffer_factor: float = 2.0  # staged playlist is minutes * this, so it never runs out mid-swim
+    minutes: float = 60  # how long you swim: only this much of the playlist is scrobbled
+    playlist_minutes: float = 120  # length of the staged playlist (the rest is buffer)
     auto_submit: bool = False  # on-connect: submit scrobbles without asking
     session_offset_minutes: float = 0  # gap between swim ending and plugging in
     ytm_playlist: str = ""
@@ -39,8 +39,14 @@ class Config:
     podcast_dir: str = "~/Music/swim-podcasts"
     max_podcasts: int = 10
     arc: bool = False
-    taste_period: str = "1month"  # Last.fm window: 7day | 1month | 3month | ...
-    rec_ratio: float = 0.2  # share of the session given to recommendations
+    mix_weights: dict[str, float] = field(default_factory=lambda: {
+        "obsession": 0.40,  # played in the last 30 days (+ your playlist)
+        "mid": 0.15,        # played 30-90 days ago
+        "fresh": 0.15,      # unplayed tracks by artists you know
+        "lost": 0.10,       # loved / heavily played all-time, silent 90+ days
+        "rec": 0.20,        # similar tracks and top tracks of your genres
+    })
+    max_per_artist: int = 3
     min_energy: float = 0.5  # drop slow/ballad tracks below this energy (0..1)
     volumes_dir: str = "/Volumes"
     stage_subdir: str = ""  # under the device music folder; "" = its root

@@ -6,20 +6,28 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
 
 ## The flow
 
-1. **Plan** (the *mix*): build an energising, semi-random session that fits the time budget and copy
-   it to the device as `001 - `, `002 - ` ... Headphones play alphabetically, so filename order is
-   play order. How the mix is built:
-   - *Favourites* (about 80%): tracks in your YouTube Music playlist, your Last.fm top tracks of the
-     last 30 days (`taste_period`), or loved. *Recommendations* (about 20%, `rec_ratio`): tracks
-     Last.fm only knows as "similar" to your recent top tracks, spread evenly through the session.
+1. **Plan** (the *mix*): build a varied, energising 2-hour playlist and copy it to the device as
+   `001 - `, `002 - ` ... Headphones play alphabetically, so filename order is play order. The playlist
+   is drawn from five buckets, each with a share of the time (`mix_weights`):
+   - **obsession** (40%): what you played in the last 30 days, plus your YouTube Music playlist;
+   - **mid** (15%): what you played 30-90 days ago and dropped since;
+   - **fresh** (15%): tracks you own by artists you listen to but have apparently never played;
+   - **lost** (10%): all-time favourites and loved tracks that went silent 90+ days ago;
+   - **rec** (20%): tracks similar to your recent obsession, and top tracks of your genres.
+   A bucket that comes up short hands its time to the others. Within a bucket tracks are drawn at
+   random (taste is flattened so the same favourites do not win every time), at most 3 per artist
+   (`max_per_artist`).
    - *Energy*: every file is analysed locally (tempo, loudness, onset density, pulse clarity; cached).
      Tracks below `min_energy` (default 0.5, i.e. slow ballads and ambient pieces) are dropped, and
-     high-energy tracks are sampled more often.
-   - *Order*: a randomised walk that avoids big energy jumps and back-to-back artists. Tracks you
-     swam to in the last `no_repeat_days` are skipped, and heavily swum ones fade out.
+     high-energy tracks are drawn more often. This applies to every bucket, including lost gems.
+   - *Order*: a randomised walk that avoids big energy jumps, back-to-back artists and long runs of
+     one bucket. Tracks you swam to in the last `no_repeat_days` are skipped, and heavily swum ones
+     fade out.
+   - *Wishlist*: recommended and favourite tracks you do not own are listed by `sync`; `sync
+     --fetch-missing N` downloads some.
 2. **Swim.**
-3. **Scrobble**: the staged list is `buffer_factor` (default 2x) longer than the swim so it can't run
-   out. Only the first `minutes` of it counts as heard: next time you plug in, those tracks are
+3. **Scrobble**: the staged list (`playlist_minutes`, default 120) is longer than the swim
+   (`minutes`, default 60) so it can't run out. Only the first `minutes` of it counts as heard: next time you plug in, those tracks are
    timestamped back from plug-in time and sent to Last.fm (and optionally ListenBrainz). If you swam
    a different length, say so with `--played-minutes`.
 4. **Podcasts**: the first N episodes of your Pocket Casts *Up Next* queue are mirrored to the device's
@@ -42,16 +50,16 @@ auto_download = true          # on-connect: download playlist tracks missing fro
 cookies_file = "~/music.youtube.com_cookies.txt"
 download_dir = "~/Music/YouTubeMusic"
 device_name = "SWIM PRO"
-minutes = 60                 # how long you swim
-buffer_factor = 2.0          # staged playlist = minutes x this, so it never runs dry
+minutes = 60                 # how long you swim (the part that gets scrobbled)
+playlist_minutes = 120       # staged playlist length; the rest is buffer
 auto_submit = false          # true: on-connect scrobbles without asking
 session_offset_minutes = 0   # gap between finishing the swim and plugging in
 ytm_playlist = "https://music.youtube.com/playlist?list=..."
 lastfm_user = "yourname"
 listenbrainz = false
 arc = false                  # (plain `plan` only) warm-up -> peak -> cool-down by BPM tag
-taste_period = "1month"      # Last.fm window for top tracks
-rec_ratio = 0.2              # share of the session for recommendations
+mix_weights = { obsession = 0.40, mid = 0.15, fresh = 0.15, lost = 0.10, rec = 0.20 }
+max_per_artist = 3
 min_energy = 0.5             # 0..1; raise to cut more mid-tempo tracks
 max_podcasts = 10
 no_repeat_days = 7
@@ -61,13 +69,13 @@ no_repeat_days = 7
 
 | command | what |
 |---|---|
-| `mix [dir] [--minutes N] [--min-energy X] [--stage DIR]` | the energising favourites + recommendations session (shows energy and fav/rec per track) |
+| `mix [dir] [--playlist-minutes N] [--min-energy X] [--stage DIR]` | the varied energising session (shows energy and bucket per track) |
 | `plan [dir] --stage DIR` | plain shuffle without taste or energy, for comparison |
 | `scrobble session.json --start ISO [--played-minutes N] [--skip 3,7] [--confirm] [--submit]` | CSV by default; `--submit` sends to Last.fm |
 | `scrobble-pending` | scrobble the last staged session (start inferred from now) |
 | `lastfm-auth` | one-time Last.fm authorisation (`LASTFM_API_KEY`/`LASTFM_API_SECRET`) |
 | `playlist [url] [--download]` | list which playlist tracks exist under `music_dir`; `--download` fetches the missing ones |
-| `sync [--download [--yes]] [--fetch-missing N]` | refresh the swim pool from the playlist + 30-day Last.fm top/loved/similar; optionally offer to download N wanted tracks you don't have yet |
+| `sync [--download [--yes]] [--fetch-missing N]` | refresh the swim pool: Last.fm 30/60/90-day charts, all-time top/loved, similar tracks, artist and genre top tracks, plus the playlist; optionally offer to download N wanted tracks you don't have yet |
 | `podcasts` | mirror Pocket Casts Up Next (`POCKETCASTS_EMAIL`/`POCKETCASTS_PASSWORD`) |
 | `on-connect` | the automatic flow (settle previous session, podcasts, plan + stage next) |
 | `agent install` | launchd agent that runs `on-connect` when volumes change |

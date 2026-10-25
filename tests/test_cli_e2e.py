@@ -27,7 +27,8 @@ def music(tmp_path):
 def test_plan_stage_and_scrobble(music, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("SWIMSCROBBLE_HOME", str(tmp_path / "home"))
     manifest, stage = tmp_path / "s.json", tmp_path / "stage"
-    main(["plan", str(music), "--minutes", "5.2", "--seed", "1", "--out", str(manifest), "--stage", str(stage)])
+    main(["plan", str(music), "--minutes", "5.2", "--playlist-minutes", "10.4", "--seed", "1",
+          "--out", str(manifest), "--stage", str(stage)])
     m = json.loads(manifest.read_text())
     assert len(m["tracks"]) == 6  # 100s tracks into 2 x 312s buffered budget
     assert m["minutes"] == 5.2
@@ -47,7 +48,7 @@ def test_plan_stage_and_scrobble(music, tmp_path, monkeypatch, capsys):
 def test_scrobble_stale_start_refuses_submit(music, tmp_path, monkeypatch):
     monkeypatch.setenv("SWIMSCROBBLE_HOME", str(tmp_path / "home"))
     manifest = tmp_path / "s.json"
-    main(["plan", str(music), "--minutes", "5.2", "--seed", "1", "--out", str(manifest)])
+    main(["plan", str(music), "--minutes", "5.2", "--playlist-minutes", "10.4", "--seed", "1", "--out", str(manifest)])
     monkeypatch.setenv("LASTFM_API_KEY", "k")
     monkeypatch.setenv("LASTFM_API_SECRET", "s")
     with pytest.raises(SystemExit, match="14-day"):

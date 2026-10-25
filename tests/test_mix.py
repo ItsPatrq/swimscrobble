@@ -1,4 +1,5 @@
 import random
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -7,7 +8,7 @@ from swimscrobble import energy, history
 from swimscrobble.energy import Features
 from swimscrobble.generator import Candidate
 from swimscrobble.library import Track
-from swimscrobble.mix import Item, build_mix, interleave, order_by_flow
+from swimscrobble.mix import DEFAULT_QUOTAS, Item, build_mix, order_by_flow
 
 
 def T(i, artist=None, dur=200):
@@ -18,6 +19,28 @@ def feats(table):
     return lambda t: Features(120, -7, 150, 0.6, table.get(t.title, 0.8))
 
 
+def cand(i, bucket, score=1.0):
+    return Candidate(f"Artist{i}", f"Song{i}", score, {bucket})
+
+
+def pool(n_per=12):
+    """5 buckets x n_per tracks, every track its own artist."""
+    lib, cands = [], []
+    for b_i, b in enumerate(DEFAULT_QUOTAS):
+        for j in range(n_per):
+            i = b_i * 100 + j
+            lib.append(T(i))
+            cands.append(cand(i, b))
+    return lib, cands
+
+
+def bucket_secs(plan):
+    out = Counter()
+    for p in plan:
+        out[p.source] += p.track.duration
+    return out
+
+
 def test_slow_tracks_are_dropped():
     lib = [T(i) for i in range(30)]
     table = {f"Song{i}": 0.2 for i in range(10)}  # ballads
@@ -26,31 +49,66 @@ def test_slow_tracks_are_dropped():
     assert not {f"Song{i}" for i in range(10)} & {p.track.title for p in plan}
 
 
-def test_recommendation_share_and_labels():
-    lib = [T(i) for i in range(40)]
-    cands = [Candidate(f"Artist{i}", f"Song{i}", 2.0, {"top"}) for i in range(20)] + [
-        Candidate(f"Artist{i}", f"Song{i}", 1.0, {"similar"}) for i in range(20, 40)
-    ]
-    plan = build_mix(lib, cands, feats({}), minutes=60, seed=3, rec_ratio=0.2)
-    recs = [p for p in plan if p.source == "rec"]
-    secs = sum(p.track.duration for p in plan)
-    assert secs <= 3600 and 2 <= len(recs) <= 4  # 20% of 18 tracks ~ 3.6
-    # favourites are only top-tagged ones; recs only similar-tagged
-    assert all(int(p.track.title[4:]) >= 20 for p in recs)
-    assert all(int(p.track.title[4:]) < 20 for p in plan if p.source == "fav")
+def test_session_is_about_two_hours_and_uses_every_bucket():
+    lib, cands = pool()
+    plan = build_mix(lib, cands, feats({}), minutes=120, seed=1)
+    assert 7000 <= sum(p.track.duration for p in plan) <= 7200
+    secs = bucket_secs(plan)
+    assert set(secs) == set(DEFAULT_QUOTAS)
+    total = sum(secs.values())
+    for b, w in DEFAULT_QUOTAS.items():  # shares follow the quotas, within one or two tracks
+        assert abs(secs[b] / total - w) < 0.08, (b, secs[b] / total)
 
 
-def test_recs_spread_through_session():
-    rng = random.Random(0)
-    favs = [Item(T(i), "fav", 0.8, 1) for i in range(12)]
-    recs = [Item(T(100 + i), "rec", 0.8, 1) for i in range(3)]
-    out = interleave(favs, recs, rng)
-    pos = [i for i, it in enumerate(out) if it.kind == "rec"]
-    assert len(out) == 15 and len(pos) == 3 and pos[0] >= 1 and pos[-1] <= 14 and pos[1] - pos[0] >= 2
+def test_quotas_are_configurable():
+    lib, cands = pool(40)
+    plan = build_mix(lib, cands, feats({}), minutes=120, seed=1, quotas={"lost": 1.0})
+    assert bucket_secs(plan)["lost"] >= 0.9 * sum(p.track.duration for p in plan)
+
+
+def test_empty_bucket_hands_its_time_to_the_others():
+    lib, cands = pool()
+    cands = [c for c in cands if "lost" not in c.sources]  # no lost gems available
+    plan = build_mix(lib, cands, feats({}), minutes=120, seed=1)
+    assert "lost" not in bucket_secs(plan) and sum(p.track.duration for p in plan) >= 7000
+
+
+def test_max_per_artist_cap_then_relaxed_only_when_needed():
+    lib = [Track(Path(f"a{i}.mp3"), "Same Artist", f"S{i}", "", 200) for i in range(20)]
+    lib += [T(100 + i) for i in range(30)]
+    cands = [Candidate(t.artist, t.title, 1.0, {"obsession"}) for t in lib]
+    plan = build_mix(lib, cands, feats({}), minutes=60, seed=1, max_per_artist=3)
+    assert Counter(p.track.artist for p in plan)["Same Artist"] == 3  # 30 other artists fill the rest
+    only = [x for x in lib if x.artist == "Same Artist"]
+    plan = build_mix(only, [Candidate(t.artist, t.title, 1.0, {"obsession"}) for t in only], feats({}), minutes=60, seed=1)
+    assert sum(p.track.duration for p in plan) >= 3400  # cap relaxed when nothing else is left
+
+
+def test_different_seeds_give_different_playlists_and_same_seed_repeats():
+    lib, cands = pool(20)
+    runs = [tuple(p.track.title for p in build_mix(lib, cands, feats({}), minutes=120, seed=s)) for s in range(6)]
+    assert len(set(runs)) == 6
+    assert runs[0] == tuple(p.track.title for p in build_mix(lib, cands, feats({}), minutes=120, seed=0))
+    sets = [set(r) for r in runs]
+    overlap = len(sets[0] & sets[1]) / len(sets[0])
+    assert overlap < 0.85  # not the same songs reshuffled
+
+
+def test_no_long_runs_of_one_bucket():
+    lib, cands = pool(20)
+    worst = 0
+    for seed in range(15):
+        plan = build_mix(lib, cands, feats({}), minutes=120, seed=seed)
+        run = best = 1
+        for a, b in zip(plan, plan[1:], strict=False):
+            run = run + 1 if a.source == b.source else 1
+            best = max(best, run)
+        worst = max(worst, best)
+    assert worst <= 5
 
 
 def test_no_adjacent_same_artist_when_avoidable():
-    items = [Item(T(i, artist=f"A{i % 4}"), "fav", 0.8, 1) for i in range(12)]
+    items = [Item(T(i, artist=f"A{i % 4}"), "obsession", 0.8, 1) for i in range(12)]
     bad = 0
     for seed in range(30):
         out = order_by_flow(items, random.Random(seed))
@@ -59,7 +117,7 @@ def test_no_adjacent_same_artist_when_avoidable():
 
 
 def test_energy_flow_avoids_big_jumps():
-    items = [Item(T(i), "fav", 0.45 if i % 2 else 0.95, 1) for i in range(20)]
+    items = [Item(T(i), "obsession", 0.45 if i % 2 else 0.95, 1) for i in range(20)]
     jumps = []
     for seed in range(30):
         out = order_by_flow(items, random.Random(seed))
@@ -77,23 +135,32 @@ def test_high_energy_favoured_in_selection():
     assert hits / 30 > 3.0  # 6 of 20 picked; unweighted would average 1.8 of the 6 energetic
 
 
-def test_seed_reproducible_and_recent_excluded():
+def test_recent_tracks_excluded_unless_needed_for_the_buffer():
     lib = [T(i) for i in range(30)]
-    a = build_mix(lib, [], feats({}), seed=5)
-    b = build_mix(lib, [], feats({}), seed=5)
-    assert [p.track.title for p in a] == [p.track.title for p in b]
     recent = {(f"artist{i}", f"song{i}") for i in range(10)}
-    c = build_mix(lib, [], feats({}), seed=5, recent=recent)
+    c = build_mix(lib, [], feats({}), minutes=60, seed=5, recent=recent)
     assert not {p.track.title.casefold() for p in c} & {k[1] for k in recent}
+    small = [T(i) for i in range(20)]  # 20 x 200s = 4000s, 10 of them recent
+    plan = build_mix(small, [], feats({}), minutes=120, seed=1, recent={(f"artist{i}", f"song{i}") for i in range(10)})
+    assert sum(p.track.duration for p in plan) == 4000
+    fresh = [p for p in plan if int(p.track.title[4:]) >= 10]
+    assert len(fresh) == 10
 
 
-def test_slack_filled_when_too_few_recs():
+def test_with_taste_pool_unlisted_tracks_are_not_eligible():
     lib = [T(i) for i in range(30)]
-    cands = [Candidate("Artist0", "Song0", 1.0, {"similar"})] + [
-        Candidate(f"Artist{i}", f"Song{i}", 1.0, {"top"}) for i in range(1, 30)
-    ]
-    plan = build_mix(lib, cands, feats({}), minutes=60, seed=1, rec_ratio=0.5)
-    assert sum(p.track.duration for p in plan) >= 3400  # not stuck at 50% budget
+    cands = [cand(i, "obsession") for i in range(10)]
+    analysed = []
+    plan = build_mix(lib, cands, lambda t: (analysed.append(t) or Features(120, -7, 150, 0.6, 0.8)), minutes=600, seed=1)
+    assert {p.track.title for p in plan} == {f"Song{i}" for i in range(10)}
+    assert len(analysed) == 10  # no audio analysis wasted on tracks that can never be picked
+
+
+def test_legacy_source_names_map_to_buckets():
+    lib = [T(0), T(1)]
+    cands = [Candidate("Artist0", "Song0", 1, {"playlist", "loved"}), Candidate("Artist1", "Song1", 1, {"similar"})]
+    plan = build_mix(lib, cands, feats({}), minutes=600, seed=1)
+    assert {p.track.title: p.source for p in plan} == {"Song0": "obsession", "Song1": "rec"}
 
 
 # ---- audio energy ----
@@ -143,21 +210,3 @@ def test_feature_cache_hits_until_file_changes(tmp_path):
     os.utime(f, (1, 1))
     energy.cached_features(db, track, fake)
     assert len(calls) == 2
-
-
-def test_buffer_filled_from_recent_when_pool_small():
-    lib = [T(i) for i in range(20)]  # 20 x 200s
-    recent = {(f"artist{i}", f"song{i}") for i in range(10)}
-    plan = build_mix(lib, [], feats({}), minutes=120, seed=1, recent=recent)
-    assert sum(p.track.duration for p in plan) == 4000  # fresh 2000s + recent topped up to the whole library
-    fresh = [p for p in plan if (p.track.artist.casefold(), p.track.title.casefold()) not in recent]
-    assert len(fresh) == 10  # every fresh track is used before any recent one repeats
-
-
-def test_with_taste_pool_unlisted_tracks_are_not_eligible():
-    lib = [T(i) for i in range(30)]
-    cands = [Candidate(f"Artist{i}", f"Song{i}", 1.0, {"top"}) for i in range(10)]
-    analysed = []
-    plan = build_mix(lib, cands, lambda t: (analysed.append(t) or Features(120, -7, 150, 0.6, 0.8)), minutes=600, seed=1)
-    assert {p.track.title for p in plan} == {f"Song{i}" for i in range(10)}
-    assert len(analysed) == 10  # no audio analysis wasted on tracks that can never be picked
