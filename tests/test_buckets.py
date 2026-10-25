@@ -118,8 +118,18 @@ def test_wishlist_skips_old_rare_and_non_song_entries():
     assert looks_like_song("Enjoy the Silence") and not looks_like_song("Weekly Show | #12") and not looks_like_song("x" * 80)
 
 
-def test_wishlist_is_capped_to_the_best_300():
+def test_wishlist_is_capped_per_bucket_best_first():
     from swimscrobble import buckets
     hist = {(f"Art{i}", f"Song{i}"): Stat(10 + i, 10 + i, 0, 0, NOW - DAY) for i in range(400)}
     _, wanted = assign(None, hist, [], now=NOW)
-    assert len(wanted) == buckets.MAX_WISHES and wanted[0].title == "Song399"
+    assert len(wanted) == round(buckets.MAX_WISHES * 0.40) and wanted[0].title == "Song399"  # obsession gets 40% of 300
+
+
+def test_discoveries_are_not_crowded_out_of_the_wishlist():
+    hist = {(f"Art{i}", f"Song{i}"): Stat(50 + i, 50 + i, 0, 0, NOW - DAY) for i in range(500)}  # 500 heavy plays
+    t = Taste(similar=[(f"Far{i}", f"Rec{i}", 0.5) for i in range(40)],
+              genre_tracks=[(f"Gen{i}", f"Hit{i}") for i in range(40)],
+              artist_tracks={"Art1": [("Art1", f"Deep{i}") for i in range(30)]})
+    _, wanted = assign(t, hist, [], now=NOW)
+    kinds = {next(iter(c.sources)) for c in wanted}
+    assert {"obsession", "rec", "fresh"} <= kinds and len(wanted) <= 300 + 30

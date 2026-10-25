@@ -19,12 +19,13 @@ from .lfhistory import Stat
 from .library import Track
 from .link import LocalIndex
 from .matcher import norm
+from .mix import DEFAULT_QUOTAS
 from .taste import Taste
 
 BUCKETS = ("obsession", "mid", "fresh", "lost", "rec")
 WISH_MIN_PLAYS = 3
 WISH_MAX_AGE = 365 * 86400  # only ask for tracks you still listen to, not what you played in 2014
-MAX_WISHES = 300
+MAX_WISHES = 300  # split between buckets in proportion to their mix share
 # podcast / video / long-form titles that end up in Last.fm history but are not songs
 NOT_A_SONG = re.compile(r"#\d+|\b(episode|odcinek|ep\.)\s*\d+|\||\bpodcast\b", re.I)
 
@@ -141,5 +142,13 @@ def assign(
         for a, t in tracks:
             if not idx.find(a, t) and (a, t) not in history:
                 want(a, t, "fresh", 0.4)
-    wishes = sorted(wanted.values(), key=lambda c: -c.score)[:MAX_WISHES]
+    # cap per bucket (not overall), otherwise heavily played tracks crowd out discoveries
+    shares = DEFAULT_QUOTAS
+    per_bucket: dict[str, list[Candidate]] = {}
+    for c in sorted(wanted.values(), key=lambda c: -c.score):
+        per_bucket.setdefault(next(iter(c.sources)), []).append(c)
+    wishes = sorted(
+        (c for b, cs in per_bucket.items() for c in cs[: max(10, round(MAX_WISHES * shares.get(b, 0.1)))]),
+        key=lambda c: -c.score,
+    )
     return sorted(owned, key=lambda c: -c.score), wishes

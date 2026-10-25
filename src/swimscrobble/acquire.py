@@ -92,6 +92,26 @@ def find_song(artist: str, title: str, search: Callable[[str], list[dict]] = yt_
     return None
 
 
+def balanced(wishes: list, weights: dict[str, float] | None) -> list:
+    """Interleave wishes by bucket in proportion to the mix shares, best first inside each bucket,
+    so a limited download quota still brings obsessions, discoveries and lost gems alike."""
+    if not weights:
+        return list(wishes)
+    queues: dict[str, list] = {}
+    for w in wishes:
+        queues.setdefault(next(iter(w.sources), ""), []).append(w)
+    credit = dict.fromkeys(queues, 0.0)
+    out = []
+    while any(queues.values()):
+        for b, q in queues.items():
+            if q:
+                credit[b] += weights.get(b, 0.05)
+        b = max((b for b in queues if queues[b]), key=lambda b: credit[b])
+        credit[b] -= sum(weights.get(x, 0.05) for x in queues if queues[x])
+        out.append(queues[b].pop(0))
+    return out
+
+
 def fetch_wishes(
     cfg,
     db,
@@ -110,7 +130,7 @@ def fetch_wishes(
 
     now = now if now is not None else time.time()
     todo = []
-    for w in wishes:
+    for w in balanced(wishes, getattr(cfg, "mix_weights", None)):
         key = f"{norm(w.artist)}|{norm(w.title)}"
         row = db.execute("SELECT status, at FROM wish_attempts WHERE key=?", (key,)).fetchone()
         if row and (row["status"] == "ok" or now - row["at"] < RETRY_AFTER):

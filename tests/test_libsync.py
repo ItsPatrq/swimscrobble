@@ -223,3 +223,15 @@ def test_sync_fetches_wishes_into_the_library_and_they_join_the_pool(tmp_path):
     pool = {(r["artist"], r["title"]): r["source"] for r in db.execute("SELECT artist, title, source FROM pool")}
     assert pool[("loved band", "big hit")] == "obsession" and ("closterkeller", "sansara") in pool
     assert rep.pool.missing == []  # nothing left on the wishlist after the fetch
+
+
+def test_balanced_wishes_follow_the_bucket_shares():
+    from swimscrobble.generator import Candidate
+    ws = [Candidate("A", f"o{i}", 1 - i / 100, {"obsession"}) for i in range(30)]
+    ws += [Candidate("B", f"r{i}", 0.5 - i / 100, {"rec"}) for i in range(30)]
+    ws += [Candidate("C", f"l{i}", 0.4 - i / 100, {"lost"}) for i in range(30)]
+    out = acquire.balanced(ws, {"obsession": 0.5, "rec": 0.3, "lost": 0.2})
+    first = [next(iter(c.sources)) for c in out[:10]]
+    assert first.count("obsession") == 5 and first.count("rec") == 3 and first.count("lost") == 2
+    assert [c.title for c in out if "obsession" in c.sources][:3] == ["o0", "o1", "o2"]  # best first
+    assert len(out) == 90 and acquire.balanced(ws, None) == ws
