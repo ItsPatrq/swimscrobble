@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import time
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
@@ -84,10 +83,8 @@ def tag_top_tracks(tag: str, limit: int = 30, transport: Transport = http_get) -
 
 @dataclass
 class Taste:
-    chart30: list[tuple[str, str, int]] = field(default_factory=list)  # most recent obsession
-    chart60: list[tuple[str, str, int]] = field(default_factory=list)  # 30-60 days ago
-    chart90: list[tuple[str, str, int]] = field(default_factory=list)  # 60-90 days ago
-    overall: list[tuple[str, str, int]] = field(default_factory=list)  # all-time top tracks
+    """What Last.fm knows beyond your own history: loved tracks and who/what is similar."""
+
     loved: list[tuple[str, str]] = field(default_factory=list)
     similar: list[tuple[str, str, float]] = field(default_factory=list)  # similar to the recent obsession
     artist_tracks: dict[str, list[tuple[str, str]]] = field(default_factory=dict)  # known artist -> top tracks
@@ -96,33 +93,21 @@ class Taste:
 
 def fetch_taste(
     user: str,
-    now: float | None = None,
+    recent_tracks: list[tuple[str, str]],
+    recent_artists: list[str],
     transport: Transport = http_get,
     *,
-    seeds: int = 10,
     artists: int = 8,
     tags: int = 3,
 ) -> Taste:
-    now = int(now if now is not None else time.time())
-    day = 86400
-    t = Taste(
-        chart30=track_chart(user, now - 30 * day, now, transport),
-        chart60=track_chart(user, now - 60 * day, now - 30 * day, transport),
-        chart90=track_chart(user, now - 90 * day, now - 60 * day, transport),
-        overall=top_tracks(user, period="overall", limit=1000, transport=transport),
-        loved=loved_tracks(user, transport=transport),
-    )
-    recent = sorted(t.chart30, key=lambda x: -x[2])
-    for artist, title, _ in recent[:seeds]:
+    """Seeded by what you played lately (computed from your local history copy)."""
+    t = Taste(loved=loved_tracks(user, transport=transport))
+    for artist, title in recent_tracks:
         t.similar += similar(artist, title, transport=transport)
-    top_artists: list[str] = []
-    for artist, _, _ in recent:
-        if artist not in top_artists:
-            top_artists.append(artist)
-    for artist in top_artists[:artists]:
+    for artist in recent_artists[:artists]:
         t.artist_tracks[artist] = artist_top_tracks(artist, transport=transport)
     genres: list[str] = []
-    for artist in top_artists[:5]:
+    for artist in recent_artists[:5]:
         for tag in artist_top_tags(artist, transport=transport):
             if tag not in GENERIC_TAGS and tag not in genres:
                 genres.append(tag)

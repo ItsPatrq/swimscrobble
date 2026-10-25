@@ -7,13 +7,19 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
 ## The flow
 
 1. **Plan** (the *mix*): build a varied, energising 2-hour playlist and copy it to the device as
-   `001 - `, `002 - ` ... Headphones play alphabetically, so filename order is play order. The playlist
-   is drawn from five buckets, each with a share of the time (`mix_weights`):
-   - **obsession** (40%): what you played in the last 30 days, plus your YouTube Music playlist;
-   - **mid** (15%): what you played 30-90 days ago and dropped since;
-   - **fresh** (15%): tracks you own by artists you listen to but have apparently never played;
-   - **lost** (10%): all-time favourites and loved tracks that went silent 90+ days ago;
-   - **rec** (20%): tracks similar to your recent obsession, and top tracks of your genres.
+   `001 - `, `002 - ` ... Headphones play alphabetically, so filename order is play order.
+   - **Pool first**: the eligible tracks are the ones in your YouTube Music playlist(s)
+     (`ytm_playlist` / `ytm_playlists`), downloaded into `~/Music` if missing. Set `pool = "library"`
+     to use everything under `music_dir` instead.
+   - **Then check each against your Last.fm history**, which is mirrored locally (every scrobble,
+     updated incrementally), so the answers are exact. Five buckets, each with a share of the
+     time (`mix_weights`):
+     - **obsession** (40%): played in the last 30 days;
+     - **mid** (15%): played 30-90 days ago and dropped since;
+     - **fresh** (15%): never played, but by an artist you do listen to;
+     - **lost** (10%): played or loved long ago, silent for 90+ days;
+     - **rec** (20%): never played, by artists you have not played either (discovery), boosted when
+       Last.fm calls them similar to your recent obsession or in your genres.
    A bucket that comes up short hands its time to the others. Within a bucket tracks are drawn at
    random (taste is flattened so the same favourites do not win every time), at most 3 per artist
    (`max_per_artist`).
@@ -23,8 +29,9 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
    - *Order*: a randomised walk that avoids big energy jumps, back-to-back artists and long runs of
      one bucket. Tracks you swam to in the last `no_repeat_days` are skipped, and heavily swum ones
      fade out.
-   - *Wishlist*: recommended and favourite tracks you do not own are listed by `sync`; `sync
-     --fetch-missing N` downloads some.
+   - *Wishlist*: `sync` lists tracks you play a lot (or Last.fm suggests) but have no file for, with
+     YouTube Music search links in `~/.config/swimscrobble/wishlist.txt`. Add the ones you want to your
+     playlist; the next sync downloads them.
 2. **Swim.**
 3. **Scrobble**: the staged list (`playlist_minutes`, default 120) is longer than the swim
    (`minutes`, default 60) so it can't run out. Only the first `minutes` of it counts as heard: next time you plug in, those tracks are
@@ -55,6 +62,8 @@ playlist_minutes = 120       # staged playlist length; the rest is buffer
 auto_submit = false          # true: on-connect scrobbles without asking
 session_offset_minutes = 0   # gap between finishing the swim and plugging in
 ytm_playlist = "https://music.youtube.com/playlist?list=..."
+ytm_playlists = []           # optional extra playlists, all synced
+pool = "playlist"            # or "library"
 lastfm_user = "yourname"
 listenbrainz = false
 arc = false                  # (plain `plan` only) warm-up -> peak -> cool-down by BPM tag

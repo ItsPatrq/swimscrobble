@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS plays(
 CREATE TABLE IF NOT EXISTS pool(
   artist TEXT, title TEXT, source TEXT, score REAL, retired INTEGER DEFAULT 0,
   added_at REAL, PRIMARY KEY(artist, title));
+CREATE TABLE IF NOT EXISTS scrobbles(
+  ts INTEGER, artist TEXT, title TEXT, PRIMARY KEY(ts, artist, title));
+CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS podcasts(
   uuid TEXT PRIMARY KEY, title TEXT, filename TEXT, downloaded_at REAL);
 """

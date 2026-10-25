@@ -7,6 +7,8 @@ from swimscrobble.libsync import sync_library
 from swimscrobble.link import LocalIndex
 from swimscrobble.ytm import Entry
 
+NOW = 100 * 86400.0
+
 
 def T(artist, title, dur=200, name=None):
     return Track(Path(name or f"{artist}-{title}.mp3"), artist, title, "", dur)
@@ -73,19 +75,30 @@ def test_download_failure_leaves_entries_missing(tmp_path):
     assert [e.index for e in rep.playlist_missing] == [1] and rep.downloaded
 
 
-def test_lastfm_tracks_bucketed_onto_local_files(tmp_path):
+def test_pool_is_the_playlist_and_history_decides_buckets(tmp_path):
     from swimscrobble.taste import Taste
 
     db = history.connect(tmp_path / "h.db")
-    lib = [T("Closterkeller", "Białe wino"), T("NIN", "Closer")]
-    taste = lambda user: Taste(  # noqa: E731
-        chart30=[("Closterkeller", "Biale wino", 7)],
-        similar=[("NIN", "Closer", 0.5), ("Unknown Band", "Rec Song", 0.8)],
-    )
-    rep = sync_library(make_cfg(tmp_path), db, fetch_playlist=lambda u: [], taste_fetch=taste, library_loader=lambda: lib)
+    db.executemany("INSERT INTO scrobbles VALUES(?,?,?)", [(int(NOW) - 86400, "Closterkeller", "Biale wino")] * 1)
+    db.commit()
+    lib = [T("Closterkeller", "Białe wino"), T("NIN", "Closer"), T("Not In Playlist", "Hidden")]
+    entries = [Entry("1", "Closterkeller", "Białe wino", 200, 1), Entry("2", "NIN", "Closer", 200, 2)]
+    seeds = []
+    taste = lambda user, tracks, artists: (seeds.append((tracks, artists)) or Taste())  # noqa: E731
+    cfg = make_cfg(tmp_path)
+    cfg.ytm_playlists = ["https://music.youtube.com/playlist?list=Y"]
+    syncs = []
+    rep = sync_library(cfg, db, fetch_playlist=lambda u: [e for e in entries], taste_fetch=taste,
+                       history_sync=lambda: syncs.append(1), library_loader=lambda: lib, now=NOW)
     pool = {(r["artist"], r["title"]): r["source"] for r in db.execute("SELECT artist, title, source FROM pool")}
     assert pool == {("closterkeller", "białe wino"): "obsession", ("nin", "closer"): "rec"}  # keyed by LOCAL tags
-    assert [c.title for c in rep.pool.missing] == ["Rec Song"]  # recommended but not owned
+    assert ("not in playlist", "hidden") not in pool  # outside the playlist: not eligible
+    assert syncs == [1] and seeds == [([("Closterkeller", "Biale wino")], ["Closterkeller"])]
+    assert rep.playlist_total == 4  # two playlists configured (ytm_playlist + ytm_playlists), 2 entries each
+
+    cfg.pool = "library"
+    sync_library(cfg, db, fetch_playlist=lambda u: entries, library_loader=lambda: lib, now=NOW)
+    assert ("not in playlist", "hidden") in {(r["artist"], r["title"]) for r in db.execute("SELECT artist, title FROM pool")}
 
 
 def test_download_command_is_the_ymp3_alias_limited_to_missing_items(tmp_path):

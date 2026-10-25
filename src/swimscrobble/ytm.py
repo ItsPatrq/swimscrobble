@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -14,6 +14,7 @@ class Entry:
     title: str
     duration: float | None
     index: int = 0  # 1-based position in the playlist (for --playlist-items)
+    playlist: str = ""  # URL of the playlist this entry came from
 
 
 def parse(data: dict) -> list[Entry]:
@@ -34,4 +35,4 @@ def parse(data: dict) -> list[Entry]:
 def fetch(url: str, run: Callable = subprocess.run, cookies: str | None = None) -> list[Entry]:
     cmd = ["yt-dlp", *(["--cookies", cookies] if cookies else []), "--flat-playlist", "-J", url]
     proc = run(cmd, capture_output=True, text=True, check=True)
-    return parse(json.loads(proc.stdout))
+    return [replace(e, playlist=url) for e in parse(json.loads(proc.stdout))]

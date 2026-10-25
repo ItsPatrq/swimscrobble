@@ -35,6 +35,8 @@ class Config:
     auto_submit: bool = False  # on-connect: submit scrobbles without asking
     session_offset_minutes: float = 0  # gap between swim ending and plugging in
     ytm_playlist: str = ""
+    ytm_playlists: list[str] = field(default_factory=list)  # more playlists; all are synced locally
+    pool: str = "playlist"  # "playlist": only tracks in your playlist(s) are eligible; "library": all of music_dir
     listenbrainz: bool = False
     podcast_dir: str = "~/Music/swim-podcasts"
     max_podcasts: int = 10
@@ -52,6 +54,10 @@ class Config:
     stage_subdir: str = ""  # under the device music folder; "" = its root
     lastfm_user: str = ""
     no_repeat_days: int = 7
+
+    @property
+    def playlists(self) -> list[str]:
+        return list(dict.fromkeys([u for u in [self.ytm_playlist, *self.ytm_playlists] if u]))
 
     @property
     def cookies_path(self) -> str | None:

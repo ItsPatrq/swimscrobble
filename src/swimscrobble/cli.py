@@ -123,7 +123,7 @@ def cmd_playlist(a) -> None:
     from .link import LocalIndex
 
     cfg = cfgmod.load()
-    url = a.url or cfg.ytm_playlist
+    url = a.url or (cfg.playlists[0] if cfg.playlists else "")
     if not url:
         raise SystemExit("pass a playlist URL or set ytm_playlist in config")
     idx = LocalIndex(_scan(cfg))
@@ -140,26 +140,31 @@ def cmd_playlist(a) -> None:
 
 
 def run_sync(cfg, db, size: int = 1000, download: str | bool = False):
-    """Scan the library, match the playlist + Last.fm taste to it, refresh the pool.
+    """Fetch playlists, check every pool track against your Last.fm history, refresh the pool.
 
     download: False = report only, "ask" = prompt first, True = fetch missing playlist tracks.
     """
-    from . import acquire, libsync, taste, ytm
+    from . import acquire, lfhistory, libsync, taste, ytm
 
     def dl(missing):
         ask = input if download == "ask" else None
-        ok = acquire.download_missing(cfg, cfg.ytm_playlist, missing, ask=ask)
-        print("download finished" if ok else "download skipped/failed")
+        for url in dict.fromkeys(e.playlist for e in missing):
+            ok = acquire.download_missing(cfg, url, [e for e in missing if e.playlist == url], ask=ask)
+            print("download finished" if ok else "download skipped/failed")
 
     return libsync.sync_library(
         cfg, db, size=size,
         fetch_playlist=lambda url: ytm.fetch(url, cookies=cfg.cookies_path),
-        taste_fetch=lambda user: taste.fetch_taste(user),
+        history_sync=lambda: print(f"Last.fm history: +{lfhistory.sync_history(db, cfg.lastfm_user)} scrobbles"),
+        taste_fetch=lambda user, tracks, artists: taste.fetch_taste(user, tracks, artists),
         download=dl if download else None,
     )
 
 
 def cmd_sync(a) -> None:
+    import subprocess
+    from urllib.parse import quote_plus
+
     from . import acquire
 
     cfg = cfgmod.load()
@@ -168,15 +173,20 @@ def cmd_sync(a) -> None:
     print(f"pool: +{len(p.added)} -{len(p.retired)}; playlist {rep.playlist_total - len(rep.playlist_missing)}/"
           f"{rep.playlist_total} found locally")
     for e in rep.playlist_missing:
-        print(f"  missing from library: #{e.index} {e.artist} - {e.title}")
-    for c in p.missing[:20]:
-        print(f"  recommended, not owned: {c.artist} - {c.title}")
+        print(f"  not downloaded yet: #{e.index} {e.artist} - {e.title}")
+    if p.missing:
+        wish = cfgmod.config_dir() / "wishlist.txt"
+        wish.parent.mkdir(parents=True, exist_ok=True)
+        wish.write_text("".join(
+            f"{c.artist} - {c.title}\t[{','.join(sorted(c.sources))}]\thttps://music.youtube.com/search?q="
+            f"{quote_plus(c.artist + ' ' + c.title)}\n" for c in p.missing))
+        print(f"\n{len(p.missing)} tracks you play/should like but have no file for -> add them to your playlist:")
+        for c in p.missing[:15]:
+            print(f"  [{','.join(sorted(c.sources))}] {c.artist} - {c.title}")
+        print(f"full list with YouTube Music search links: {wish}")
     if a.fetch_missing and p.missing:
-        import subprocess
-
         for c in p.missing[: a.fetch_missing]:
-            url = f"ytsearch1:{c.artist} {c.title}"
-            subprocess.run(acquire.playlist_download_command(cfg, url))
+            subprocess.run(acquire.playlist_download_command(cfg, f"ytsearch1:{c.artist} {c.title}"))
         print("fetched; re-run sync to add them to the pool")
 
 
@@ -230,9 +240,9 @@ def cmd_on_connect(a) -> None:
             pocketcasts.up_next(pocketcasts.saved_token()),
             cfg.device_path / cfg.device_podcast_subdir, db, cfg.max_podcasts)
     def pool_sync():
-        if not (cfg.lastfm_user or cfg.ytm_playlist):
+        if not (cfg.lastfm_user or cfg.playlists):
             return "skipped (no lastfm_user / ytm_playlist configured)"
-        rep = run_sync(cfg, db, download=cfg.auto_download and bool(cfg.ytm_playlist))
+        rep = run_sync(cfg, db, download=cfg.auto_download and bool(cfg.playlists))
         left = len(rep.playlist_missing)
         return f"+{len(rep.pool.added)} -{len(rep.pool.retired)}, {left} playlist tracks still missing"
 
