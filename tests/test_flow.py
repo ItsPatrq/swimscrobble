@@ -126,3 +126,43 @@ def test_pool_sync_runs_and_failure_does_not_block(env):
     cfg.auto_submit = True  # settle the first session so the second connection reaches the pool step
     log, _ = run(cfg, db, lib, now=datetime(2026, 10, 25, 12), pool_sync=bad, lastfm_submit=len)
     assert any("pool sync failed" in x for x in log)
+
+
+def test_plugging_in_again_straight_away_does_not_scrobble_a_swim_that_never_happened(env):
+    cfg, db, lib, vol = env
+    cfg.auto_submit = True
+    run(cfg, db, lib, now=datetime(2026, 10, 25, 9, 0))
+    flow._set_handled(False)  # unplug / replug
+    sent = []
+    log, _ = run(cfg, db, lib, now=datetime(2026, 10, 25, 9, 5), lastfm_submit=lambda s: sent.append(s))
+    assert log == ["too soon"] and not sent and history.pending_session(db) is not None
+
+
+def test_reroll_replaces_the_files_and_discards_the_old_session_without_scrobbling(env):
+    cfg, db, lib, vol = env
+    run(cfg, db, lib)
+    music = vol / "SWIM PRO" / "Music"
+    before = {p.name for p in music.iterdir()}
+    first_id = history.pending_session(db)["id"]
+    m = flow.reroll(cfg, db, seed=99, library_loader=lambda _: lib, feature_of=lambda t: Features(120, -7, 150, 0.6, 0.8))
+    after = {p.name for p in music.iterdir()}
+    assert len(after) == len(m["tracks"]) and after != before  # old staged files removed, new ones in
+    assert db.execute("SELECT status FROM sessions WHERE id=?", (first_id,)).fetchone()["status"] == "discarded"
+    assert history.pending_session(db)["id"] == m["id"]
+    assert db.execute("SELECT COUNT(*) c FROM plays").fetchone()["c"] == 0  # nothing scrobbled
+
+
+def test_reroll_needs_the_device(env):
+    cfg, db, lib, vol = env
+    (vol / "SWIM PRO" / "Music").rmdir()
+    (vol / "SWIM PRO").rmdir()
+    import pytest
+    with pytest.raises(RuntimeError):
+        flow.reroll(cfg, db, library_loader=lambda _: lib)
+
+
+def test_discard_pending(env):
+    cfg, db, lib, _ = env
+    run(cfg, db, lib)
+    sid = history.discard_pending(db)
+    assert sid and history.pending_session(db) is None and history.discard_pending(db) is None

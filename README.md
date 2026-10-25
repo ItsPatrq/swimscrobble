@@ -89,6 +89,9 @@ no_repeat_days = 7
 | `plan [dir] --stage DIR` | plain shuffle without taste or energy, for comparison |
 | `scrobble session.json --start ISO [--played-minutes N] [--skip 3,7] [--confirm] [--submit]` | CSV by default; `--submit` sends to Last.fm |
 | `scrobble-pending` | scrobble the last staged session (start inferred from now) |
+| `status` | what is staged, history and pool sizes, what is excluded right now |
+| `reroll [--sync]` | replace the staged playlist on the connected headphones with a fresh one (old session discarded, not scrobbled) |
+| `skip` | forget the staged session without scrobbling (you did not swim) |
 | `eval` | replay your Last.fm history and score the models behind the playlist (reproduces docs/ALGORITHM.md) |
 | `lastfm-auth` | one-time Last.fm authorisation (`LASTFM_API_KEY`/`LASTFM_API_SECRET`) |
 | `playlist [url] [--download]` | list which playlist tracks exist under `music_dir`; `--download` fetches the missing ones |
@@ -109,6 +112,31 @@ no_repeat_days = 7
 - failed submissions keep the session pending, nothing is lost or double-sent.
 
 macOS may ask for permission to access removable volumes for the agent's Python.
+
+## Daily use
+
+With the agent installed (`swimscrobble agent install`) and `auto_submit = true`, the routine is just plugging in:
+
+1. **Before a swim**: plug in. The previous swim is scrobbled (first `minutes` of that playlist), the pool is
+   refreshed (new Last.fm plays, wishlist downloads), a new 2-hour playlist is staged. Eject, swim.
+2. **After the swim**: plug in again (also to charge/transfer). That is step 1 for the next swim.
+
+Without the agent, run `swimscrobble on-connect` at those moments. If `auto_submit` is off, the previous swim
+waits as `~/.config/swimscrobble/pending/*.csv` until `swimscrobble scrobble-pending [--played-minutes N]
+[--skip 3,7] --confirm --submit`, then `swimscrobble on-connect` stages the next one.
+
+**Every playlist is new.** The selection is randomised (`variety`), history moves on (what you played since
+changes the buckets), tracks you swam to in the last `no_repeat_days` (7) are skipped, and the more you swam to
+a track the less it is picked. Only the first `minutes` of the 2-hour list count as played; the unplayed
+buffer is *not* marked as swum, so it comes back first.
+
+**Rotation / corrections**
+- Do not like the list? `swimscrobble reroll` (add `--sync` to refresh from Last.fm first) stages another one.
+- Staged but did not swim? `swimscrobble skip`. Plugging in again within `min_swim_gap_minutes` (20) of staging
+  never scrobbles, so a second plug-in is harmless.
+- Swam a different length? `scrobble-pending --played-minutes 45` (or `minutes` in the config).
+- Check where things stand: `swimscrobble status`.
+- More variety over time: keep running `sync --download` (or let `auto_download` do it) so the library grows.
 
 ## Library and downloads
 

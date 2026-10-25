@@ -36,10 +36,12 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return db
 
 
-def add_session(db, manifest: dict, minutes: float, seed: int | None, staged_dir: str | None) -> int:
+def add_session(
+    db, manifest: dict, minutes: float, seed: int | None, staged_dir: str | None, at: float | None = None
+) -> int:
     cur = db.execute(
         "INSERT INTO sessions(planned_at, seed, minutes, staged_dir, manifest) VALUES(?,?,?,?,?)",
-        (time.time(), seed, minutes, staged_dir, json.dumps(manifest, ensure_ascii=False)),
+        (at if at is not None else time.time(), seed, minutes, staged_dir, json.dumps(manifest, ensure_ascii=False)),
     )
     db.commit()
     return cur.lastrowid
@@ -78,3 +80,13 @@ def recent_plays(db, days: int) -> set[tuple[str, str]]:
 def play_counts(db) -> dict[tuple[str, str], int]:
     rows = db.execute("SELECT artist, title, COUNT(*) n FROM plays GROUP BY artist, title").fetchall()
     return {(r["artist"].casefold(), r["title"].casefold()): r["n"] for r in rows}
+
+
+def discard_pending(db) -> int | None:
+    """Drop the staged-but-unsettled session without scrobbling it. Returns its id."""
+    row = pending_session(db)
+    if row is None:
+        return None
+    db.execute("UPDATE sessions SET status='discarded' WHERE id=?", (row["id"],))
+    db.commit()
+    return row["id"]

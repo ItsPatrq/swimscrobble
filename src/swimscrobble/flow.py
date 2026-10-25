@@ -61,6 +61,8 @@ def settle_previous(db, cfg: Config, now: datetime, notify, **deps) -> str:
     row = history.pending_session(db)
     if row is None:
         return "no previous session"
+    if now.timestamp() - row["planned_at"] < cfg.min_swim_gap_minutes * 60:
+        return "too soon"  # staged moments ago (plugged in twice?): nothing can have been swum yet
     # the staged list is longer than the swim: only the first `minutes` of it was heard
     plan, listened = played_part(json.loads(row["manifest"]))
     end = now - timedelta(minutes=cfg.session_offset_minutes)
@@ -107,6 +109,7 @@ def plan_and_stage(
     seed: int | None = None,
     previous: dict | None = None,
     feature_of: Callable[[Track], Features] | None = None,
+    now: datetime | None = None,
 ) -> dict:
     stage_dir = cfg.stage_path
     stage_dir.mkdir(parents=True, exist_ok=True)
@@ -120,7 +123,8 @@ def plan_and_stage(
     for p in plan:
         shutil.copy2(p.track.path, stage_dir / p.staged_name)
     manifest = to_manifest(plan, seed, cfg.minutes)
-    manifest["id"] = history.add_session(db, manifest, cfg.minutes, seed, str(stage_dir))
+    manifest["id"] = history.add_session(
+        db, manifest, cfg.minutes, seed, str(stage_dir), at=now.timestamp() if now else None)
     return manifest
 
 
@@ -149,8 +153,8 @@ def on_connect(
 
     settled = settle_previous(db, cfg, now, notify, **deps)
     log.append(settled)
-    if settled == "awaiting confirmation" or settled.startswith("failed"):
-        return log  # do not plan over an unsettled session
+    if settled in ("awaiting confirmation", "too soon") or settled.startswith("failed"):
+        return log  # do not plan over an unsettled (or still current) session
 
     if podcast_sync:
         try:
@@ -166,7 +170,29 @@ def on_connect(
 
     prev_row = db.execute("SELECT manifest FROM sessions WHERE staged_dir IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
     previous = json.loads(prev_row["manifest"]) if prev_row else None
-    manifest = plan_and_stage(db, cfg, library_loader(cfg.music_path), previous=previous, feature_of=feature_of)
+    manifest = plan_and_stage(db, cfg, library_loader(cfg.music_path), previous=previous, feature_of=feature_of,
+                              now=now)
     log.append(f"staged session {manifest['id']}: {len(manifest['tracks'])} tracks")
     notify(f"swimscrobble: staged {len(manifest['tracks'])} tracks for the next swim")
     return log
+
+
+def reroll(
+    cfg: Config,
+    db,
+    seed: int | None = None,
+    library_loader: Callable[[Path], list[Track]] | None = None,
+    feature_of: Callable[[Track], Features] | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Replace the staged playlist with a fresh one. The old session is discarded, not scrobbled."""
+    if not cfg.device_path.is_dir():
+        raise RuntimeError(f"{cfg.device_name} is not connected")
+    library_loader = library_loader or (
+        lambda p: scan(p, exclude=tuple(cfg.exclude_dirs), min_seconds=cfg.min_track_seconds)
+    )
+    prev_row = db.execute("SELECT manifest FROM sessions WHERE staged_dir IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+    previous = json.loads(prev_row["manifest"]) if prev_row else None
+    history.discard_pending(db)
+    return plan_and_stage(db, cfg, library_loader(cfg.music_path), seed=seed, previous=previous,
+                          feature_of=feature_of, now=now)

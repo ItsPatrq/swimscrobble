@@ -34,6 +34,7 @@ class Config:
     minutes: float = 60  # how long you swim: only this much of the playlist is scrobbled
     playlist_minutes: float = 120  # length of the staged playlist (the rest is buffer)
     auto_submit: bool = False  # on-connect: submit scrobbles without asking
+    min_swim_gap_minutes: float = 20  # a session staged less than this long ago cannot have been swum
     session_offset_minutes: float = 0  # gap between swim ending and plugging in
     ytm_playlist: str = ""
     ytm_playlists: list[str] = field(default_factory=list)  # more playlists; all are synced locally

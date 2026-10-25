@@ -252,6 +252,56 @@ def cmd_eval(a) -> None:
         print(f"  {name:36s} {v:.0%}")
 
 
+def cmd_skip(a) -> None:
+    """The staged session was never swum: forget it without scrobbling anything."""
+    from . import flow
+
+    db = history.connect()
+    sid = history.discard_pending(db)
+    flow._set_handled(False)
+    print(f"discarded session {sid}; nothing was scrobbled" if sid else "no pending session")
+
+
+def cmd_reroll(a) -> None:
+    """Replace the staged playlist on the connected headphones with a new one."""
+    from . import flow
+
+    cfg = cfgmod.load()
+    db = history.connect()
+    if a.sync:
+        rep = run_sync(cfg, db, download=False)
+        print(f"pool refreshed: +{len(rep.pool.added)} -{len(rep.pool.retired)}")
+    try:
+        m = flow.reroll(cfg, db, a.seed)
+    except RuntimeError as e:
+        raise SystemExit(str(e)) from None
+    flow._set_handled(True)
+    mins = sum(t["duration"] for t in m["tracks"]) / 60
+    mixes = Counter(t["source"] for t in m["tracks"])
+    print(f"staged new session {m['id']}: {len(m['tracks'])} tracks, {mins:.0f} min  "
+          + "  ".join(f"{b}={n}" for b, n in mixes.most_common()))
+
+
+def cmd_status(a) -> None:
+    cfg = cfgmod.load()
+    db = history.connect()
+    row = history.pending_session(db)
+    if row:
+        m = json.loads(row["manifest"])
+        age = (time.time() - row["planned_at"]) / 3600
+        mins = sum(t["duration"] for t in m["tracks"]) / 60
+        print(f"staged session {row['id']}: {len(m['tracks'])} tracks, {mins:.0f} min, staged {age:.1f} h ago "
+              f"(swim {m.get('minutes', cfg.minutes):.0f} min counts when scrobbled)")
+    else:
+        print("no staged session waiting to be scrobbled")
+    n = db.execute("SELECT COUNT(*) c FROM scrobbles").fetchone()["c"]
+    pool = db.execute("SELECT source, COUNT(*) c FROM pool WHERE retired=0 GROUP BY source ORDER BY c DESC").fetchall()
+    print(f"Last.fm history: {n} scrobbles; pool: " + (", ".join(f"{r['source']}={r['c']}" for r in pool) or "empty"))
+    recent = len(history.recent_plays(db, cfg.no_repeat_days))
+    print(f"swum in the last {cfg.no_repeat_days} days (skipped for now): {recent} tracks")
+    print(f"device {cfg.device_name}: " + ("connected" if cfg.device_path.is_dir() else "not connected"))
+
+
 def cmd_podcasts(a) -> None:
     from . import pocketcasts
 
@@ -333,6 +383,15 @@ def main(argv=None) -> None:
     mx.add_argument("--out", default="session.json")
     mx.add_argument("--stage")
     mx.set_defaults(func=cmd_mix)
+
+    sub.add_parser("skip", help="discard the staged session without scrobbling (you did not swim)").set_defaults(func=cmd_skip)
+
+    rr = sub.add_parser("reroll", help="replace the staged playlist with a fresh one")
+    rr.add_argument("--seed", type=int)
+    rr.add_argument("--sync", action="store_true", help="refresh the pool from Last.fm first")
+    rr.set_defaults(func=cmd_reroll)
+
+    sub.add_parser("status", help="what is staged, pool and history sizes").set_defaults(func=cmd_status)
 
     sub.add_parser("eval", help="replay your Last.fm history to evaluate the scoring models").set_defaults(func=cmd_eval)
 
