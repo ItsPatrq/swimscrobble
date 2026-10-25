@@ -309,11 +309,15 @@ def cmd_status(a) -> None:
 def cmd_shell(a) -> None:
     from rich.console import Console
 
-    from . import shell
+    from . import keys, shell
+    from .ui import KeyUI
 
     cfg = cfgmod.load()
     db = history.connect()
-    shell.Shell(cfg, db, shell.real_actions(cfg, db), Console(highlight=False)).run()
+    console = Console(highlight=False)
+    plain = os.environ.get("SWIMSCROBBLE_PLAIN") or getattr(a, "plain", False)
+    ui = KeyUI(console) if keys.available() and not plain else None
+    shell.Shell(cfg, db, shell.real_actions(cfg, db), console, keys=ui).run()
 
 
 def cmd_podcasts(a) -> None:
@@ -405,7 +409,9 @@ def main(argv=None) -> None:
     rr.add_argument("--sync", action="store_true", help="refresh the pool from Last.fm first")
     rr.set_defaults(func=cmd_reroll)
 
-    sub.add_parser("shell", help="interactive shell (also: run with no arguments)").set_defaults(func=cmd_shell)
+    sh = sub.add_parser("shell", help="interactive shell (also: run with no arguments)")
+    sh.add_argument("--plain", action="store_true", help="line input instead of arrow-key menus")
+    sh.set_defaults(func=cmd_shell)
 
     sub.add_parser("status", help="what is staged, pool and history sizes").set_defaults(func=cmd_status)
 

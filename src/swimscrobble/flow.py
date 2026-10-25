@@ -196,3 +196,36 @@ def reroll(
     history.discard_pending(db)
     return plan_and_stage(db, cfg, library_loader(cfg.music_path), seed=seed, previous=previous,
                           feature_of=feature_of, now=now)
+
+
+def last_staged(db):
+    return db.execute("SELECT * FROM sessions WHERE staged_dir IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+
+
+def orphans(cfg: Config, db) -> tuple[int, int | None]:
+    """(prefixed files from the latest session still on the device, that session's id) when nothing is pending."""
+    if history.pending_session(db) is not None or not cfg.device_path.is_dir():
+        return 0, None
+    row = last_staged(db)
+    if row is None:
+        return 0, None
+    manifest = json.loads(row["manifest"])
+    n = sum(1 for t in manifest["tracks"] if (cfg.stage_path / t["staged"]).exists())
+    return n, row["id"]
+
+
+def adopt_orphans(cfg: Config, db) -> int | None:
+    """Make the playlist still on the headphones the current session again (so it can be scrobbled)."""
+    n, sid = orphans(cfg, db)
+    if not n:
+        return None
+    db.execute("UPDATE sessions SET status='planned' WHERE id=?", (sid,))
+    db.commit()
+    return sid
+
+
+def clear_orphans(cfg: Config, db) -> int:
+    n, sid = orphans(cfg, db)
+    if not n:
+        return 0
+    return clear_staged(cfg.stage_path, json.loads(last_staged(db)["manifest"]))

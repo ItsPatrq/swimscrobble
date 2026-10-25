@@ -130,7 +130,20 @@ one key per action:
 | `y` | sync: Last.fm history, pool, downloads |
 | `c` | scrobble the last swim: how long you swam, which tracks you skipped, preview, send; then stage the next |
 | `k` | skip: forget the staged playlist (you did not swim) |
+| `u` / `x` | use / remove staged files still on the headphones after a discarded session (the dashboard warns when there are some) |
 | `o` / `e` / `g` | podcasts / run the whole automatic routine now / install or remove the launchd agent |
+
+**Keyboard navigation**: on a terminal the menu is driven by `↑`/`↓` (or `j`/`k`), `Enter` and `Esc`; every
+item also has a shortcut letter that fires immediately. Lists (search results, YouTube Music results) are picked
+with the arrows; the wishlist is a checklist (`Space` ticks, `a` all/none, `Enter` downloads); yes/no questions
+are `y`/`n`. In the playlist view the cursor walks the tracks: `Enter` picks a track up, `↑`/`↓` carry it, `Enter`
+drops it; `d` deletes (with confirmation), `a` adds, `r` rerolls, `q` goes back. Use `swimscrobble shell --plain`
+(or `SWIMSCROBBLE_PLAIN=1`) for plain line input; that is also used automatically when not on a terminal.
+
+**What "staged" means**: the playlist this tool copied to the headphones (files named `001 - …`) and recorded in
+its database, so it knows what to scrobble. If you discard the record (`k`) but leave the files, they still play;
+the dashboard then says "none tracked" and offers `u` (adopt them again) or `x` (remove them). `k` now also offers
+to remove the files.
 
 The shell and the agent share everything (database, config, device state), so use either, or both: the agent
 does the routine when you plug in, the shell is for looking, correcting and rerolling.

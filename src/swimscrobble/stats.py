@@ -25,6 +25,8 @@ class Dashboard:
     wishlist: int = 0
     last_sync_hours: float | None = None
     agent_installed: bool = False
+    orphans: int = 0  # staged files still on the headphones that belong to no pending session
+    orphan_session: int | None = None
 
 
 def swim_split(manifest: dict, swim_minutes: float) -> tuple[int, float]:
@@ -76,6 +78,9 @@ def dashboard(cfg: Config, db, now: float | None = None, agent_installed: bool =
     if cfg.device_path.is_dir():
         free = shutil.disk_usage(cfg.device_path).free / 1e9
     meta = db.execute("SELECT value FROM meta WHERE key='last_sync'").fetchone()
+    from .flow import orphans
+
+    n_orphans, orphan_id = orphans(cfg, db)
     return Dashboard(
         device_connected=cfg.device_path.is_dir(), device_free_gb=free, staged=staged,
         scrobbles=db.execute("SELECT COUNT(*) c FROM scrobbles").fetchone()["c"],
@@ -85,7 +90,7 @@ def dashboard(cfg: Config, db, now: float | None = None, agent_installed: bool =
         swum_recently=len(history.recent_plays(db, cfg.no_repeat_days)),
         wishlist=len(wishlist_lines()),
         last_sync_hours=(now - float(meta["value"])) / 3600 if meta else None,
-        agent_installed=agent_installed,
+        agent_installed=agent_installed, orphans=n_orphans, orphan_session=orphan_id,
     )
 
 

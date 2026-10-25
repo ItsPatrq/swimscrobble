@@ -277,9 +277,35 @@ def test_scrobble_right_after_staging_asks_first(env):
 def test_skip_discards_without_scrobbling(env):
     cfg, db, *_ = env
     stage(env)
-    shell, fake, out = make(env, "k", "y", "q")
+    shell, fake, out = make(env, "k", "y", "n", "q")  # skip, and keep the files on the headphones
     shell.run()
     assert history.pending_session(db) is None and not fake.calls and "nothing was scrobbled" in text(out)
+    assert len(list(env[3].iterdir())) >= 10  # files untouched
+
+
+def test_skip_can_also_remove_the_files_from_the_headphones(env):
+    cfg, db, lib, folder, _ = env
+    stage(env)
+    shell, _, out = make(env, "k", "y", "y", "q")
+    shell.run()
+    assert list(folder.iterdir()) == [] and "removed" in text(out)
+
+
+def test_dashboard_warns_about_leftover_files_and_they_can_be_adopted_or_removed(env):
+    cfg, db, lib, folder, _ = env
+    stage(env)
+    n = len(list(folder.iterdir()))
+    history.discard_pending(db)  # the database forgets, the headphones do not
+    shell, _, out = make(env, "q")
+    shell.run()
+    assert "none tracked" in text(out) and f"{n} tracks of discarded session" in text(out)
+    shell, _, out = make(env, "u", "q")
+    shell.run()
+    assert history.pending_session(db) is not None and "current playlist again" in text(out)
+    history.discard_pending(db)
+    shell, _, out = make(env, "x", "y", "q")
+    shell.run()
+    assert list(folder.iterdir()) == [] and history.pending_session(db) is None
 
 
 def test_agent_toggle_podcasts_and_on_connect(env):

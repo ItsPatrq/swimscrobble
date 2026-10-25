@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from . import editing, flow, history, stats
 from .config import Config
@@ -23,6 +24,7 @@ from .link import LocalIndex
 from .matcher import norm
 from .scrobble import build_scrobbles
 from .session import played_part
+from .ui import Item, KeyUI
 
 COLORS = {"obsession": "magenta", "mid": "cyan", "lost": "yellow", "fresh": "green", "rec": "bright_blue", "added": "white"}
 HELP = """\
@@ -34,6 +36,7 @@ HELP = """\
 [bold]y[/] sync          refresh Last.fm history and the pool; download missing tracks
 [bold]c[/] scrobble      settle the last swim (how long, what you skipped) and send it to Last.fm
 [bold]k[/] skip          forget the staged playlist: you did not swim
+[bold]u[/] / [bold]x[/]        use / remove staged files left on the headphones by a discarded session
 [bold]o[/] podcasts      mirror your Pocket Casts Up Next queue to the headphones
 [bold]e[/] on-connect    run the whole automatic routine now (settle, sync, stage)
 [bold]g[/] agent         install / remove the launchd agent that runs the routine when you plug in
@@ -63,8 +66,9 @@ def fmt_min(seconds: float) -> str:
 
 class Shell:
     def __init__(self, cfg: Config, db, actions: Actions, console: Console | None = None,
-                 ask: Callable[[str], str] = input):
+                 ask: Callable[[str], str] = input, keys: KeyUI | None = None):
         self.cfg, self.db, self.act = cfg, db, actions
+        self.keys = keys  # arrow-key widgets; None = plain line input (pipes, tests)
         self.console = console or Console(highlight=False)
         self._ask = ask
         self._library: list[Track] | None = None
@@ -77,10 +81,15 @@ class Shell:
             raise SystemExit(0) from None
         return answer or default
 
+    _said = 0
+
     def say(self, *a, **kw) -> None:
+        self._said += 1
         self.console.print(*a, **kw)
 
     def yes(self, prompt: str, default: bool = False) -> bool:
+        if self.keys:
+            return self.keys.confirm(prompt, default)
         a = self.ask(f"{prompt} ({'Y/n' if default else 'y/N'})").lower()
         return default if a == "" else a.startswith("y")
 
@@ -109,6 +118,10 @@ class Shell:
             t.add_row("Staged", f"session {s['id']}: {s['tracks']} tracks, {s['minutes']:.0f} min, "
                                 f"staged {s['age_hours']:.1f} h ago")
             t.add_row("", f"{s['swim_tracks']} tracks fill your {s['swim_minutes']:.0f}-min swim · {mix}")
+        elif d.orphans:
+            t.add_row("Staged", f"[yellow]none tracked[/], but {d.orphans} tracks of discarded session {d.orphan_session} "
+                                "are still on the headphones and will play")
+            t.add_row("", "[dim]u use them as the current playlist · x remove them · r replace them with a new one[/]")
         else:
             t.add_row("Staged", "[dim]nothing waiting: press r to stage a playlist[/]")
         sync = "never" if d.last_sync_hours is None else f"{d.last_sync_hours:.1f} h ago"
@@ -128,6 +141,8 @@ class Shell:
 
     # -- screens ----------------------------------------------------------------------------------
     def playlist(self) -> None:
+        if self.keys:
+            return self.playlist_keys()
         while True:
             row, m = self.session()
             if not row:
@@ -171,7 +186,82 @@ class Shell:
             except (ValueError, RuntimeError) as e:
                 self.say(f"[red]{e}[/]")
 
-    def reroll(self) -> None:
+    def playlist_keys(self) -> None:
+        """Cursor-driven editor: Enter picks a track up, arrows move it, Enter drops it; d deletes."""
+        cursor = 0
+        while True:
+            row, m = self.session()
+            if not row:
+                self.say("[yellow]No staged playlist.[/] Press r to create one.")
+                return
+            order = sorted(m["tracks"], key=lambda t: t["position"])
+            swim = m.get("minutes", self.cfg.minutes) * 60
+            state = {"grab": None}  # origin index of the track being carried
+
+            def render(idx, order=order, swim=swim, row=row, state=state):
+                table = Table(title=f"Session {row['id']} · {len(order)} tracks", header_style="bold", show_edge=False)
+                for h, j in (("", "left"), ("#", "right"), ("at", "right"), ("len", "right"), ("energy", "right"),
+                             ("bucket", "left"), ("track", "left")):
+                    table.add_column(h, justify=j)
+                t, marked = 0.0, False
+                for i, tr in enumerate(order):
+                    if not marked and t >= swim:
+                        table.add_row("", "", "", "", "", "",
+                                      f"[dim]── {swim / 60:.0f} min: end of your swim, buffer below ──[/]")
+                        marked = True
+                    b, e = tr.get("source", ""), tr.get("energy")
+                    carried = state["grab"] is not None and i == idx
+                    style = "bold black on yellow" if carried else "bold reverse" if i == idx else ""
+                    cell = lambda x, style=style: Text(str(x), style=style)  # noqa: E731
+                    table.add_row(cell("▸" if i == idx else " "), cell(i + 1), cell(fmt_min(t)), cell(fmt_min(tr["duration"])),
+                                  cell(f"{e:.2f}" if e else ""), cell(b), cell(f"{tr['artist']} - {tr['title']}"))
+                    t += tr["duration"]
+                hint = ("↑/↓ carry it · Enter drop here · Esc cancel" if state["grab"] is not None
+                        else "↑/↓ move · Enter pick up · d delete · a add · r reroll · q back")
+                return Group(table, Text(hint, style="dim"))
+
+            def on_move(old, new, order=order, state=state):
+                if state["grab"] is not None:  # the carried track follows the cursor
+                    order.insert(new, order.pop(old))
+
+            def on_key(key, idx, order=order, state=state):
+                if key in ("enter", "space"):
+                    if state["grab"] is None:
+                        state["grab"] = idx
+                        return idx, None
+                    return idx, ("drop", state["grab"] + 1, idx + 1)
+                if key == "esc" or key == "q":
+                    return idx, ("reload",) if state["grab"] is not None else ("quit",)
+                if state["grab"] is None and key in ("d", "a", "r"):
+                    return idx, ({"d": "delete", "a": "add", "r": "reroll"}[key], idx + 1)
+                return idx, None
+
+            action = self.keys._loop(render, len(order), on_key, cursor, on_move)
+            kind = action[0]
+            try:
+                if kind == "quit":
+                    return
+                if kind == "drop":
+                    if action[1] != action[2]:
+                        editing.move_track(self.cfg, self.db, action[1], action[2])
+                    cursor = action[2] - 1
+                elif kind == "delete":
+                    t = order[action[1] - 1]
+                    if self.yes(f"Delete {t['artist']} - {t['title']}?", default=True):
+                        editing.remove_tracks(self.cfg, self.db, {action[1]})
+                    cursor = max(0, min(action[1] - 1, len(order) - 2))
+                elif kind == "add":
+                    self.add_track()
+                    cursor = 0
+                elif kind == "reroll":
+                    self.reroll(show=False)
+                    cursor = 0
+            except _Cancel:
+                pass
+            except (ValueError, RuntimeError) as e:
+                self.say(f"[red]{e}[/]")
+
+    def reroll(self, show: bool = True) -> None:
         if not self.cfg.device_path.is_dir():
             self.say(f"[red]{self.cfg.device_name} is not connected.[/]")
             return
@@ -192,7 +282,8 @@ class Shell:
         flow._set_handled(True)
         self.say(f"[green]staged session {m['id']}:[/] {len(m['tracks'])} tracks, "
                  f"{sum(t['duration'] for t in m['tracks']) / 60:.0f} min")
-        self.playlist()
+        if show:
+            self.playlist()
 
     def search_local(self, query: str, limit: int = 10) -> list[Track]:
         words = norm(query).split()
@@ -225,6 +316,15 @@ class Shell:
 
     def pick_local(self, query: str) -> Track | None:
         hits = self.search_local(query)
+        if self.keys:
+            r = self.keys.select([f"{h.artist} - {h.title}  ({fmt_min(h.duration)})" for h in hits],
+                                 title=f"{len(hits)} matches in your library" if hits else "nothing in your library matches",
+                                 extra=[Item("y", "Search YouTube Music instead")])
+            if r == "y":
+                return None
+            if r is None:
+                raise _Cancel
+            return hits[r]
         if hits:
             t = Table(show_edge=False, header_style="bold")
             for h in ("#", "artist", "title", "len"):
@@ -246,14 +346,22 @@ class Shell:
         if not results:
             self.say("[yellow]no results[/]")
             return None
+        if self.keys:
+            rows = [f"{', '.join(a['name'] for a in r.get('artists') or [])} - {r.get('title', '')}  "
+                    f"[{(r.get('album') or {}).get('name', '')}]  {fmt_min(r.get('duration_seconds') or 0)}" for r in results]
+            pick = self.keys.select(rows, title="YouTube Music: Enter downloads and uses it")
+            a = str(pick + 1) if isinstance(pick, int) else ""
+        else:
+            a = None
         t = Table(show_edge=False, header_style="bold")
         for h in ("#", "artist", "title", "album", "len"):
             t.add_column(h)
         for i, r in enumerate(results, 1):
             t.add_row(str(i), ", ".join(a["name"] for a in r.get("artists") or []), r.get("title", ""),
                       (r.get("album") or {}).get("name", ""), fmt_min(r.get("duration_seconds") or 0))
-        self.say(t)
-        a = self.ask("Number to download and use · Enter cancels")
+        if a is None:
+            self.say(t)
+            a = self.ask("Number to download and use · Enter cancels")
         if not (a.isdigit() and 1 <= int(a) <= len(results)):
             return None
         r = results[int(a) - 1]
@@ -307,11 +415,19 @@ class Shell:
             t.add_column(h)
         for i, (label, bucket, _url) in enumerate(items[:20], 1):
             t.add_row(str(i), f"[{COLORS.get(bucket, 'white')}]{bucket}[/]", label)
-        self.say(t)
-        a = self.ask("Download which? (e.g. 1,3,5 or 'top 5') · Enter back")
-        if not a:
-            return
-        idx = list(range(1, 6)) if a.startswith("top") else [int(x) for x in a.replace(" ", "").split(",") if x.isdigit()]
+        if self.keys:
+            shown = items[:20]
+            picked = self.keys.multiselect([f"[{b}] {label}" for label, b, _ in shown],
+                                           title=f"Wishlist ({len(items)}): tick tracks to download now")
+            if not picked:
+                return
+            idx = [i + 1 for i in picked]
+        else:
+            self.say(t)
+            a = self.ask("Download which? (e.g. 1,3,5 or 'top 5') · Enter back")
+            if not a:
+                return
+            idx = list(range(1, 6)) if a.startswith("top") else [int(x) for x in a.replace(" ", "").split(",") if x.isdigit()]
         got = 0
         for i in idx:
             if not 1 <= i <= min(20, len(items)):
@@ -376,6 +492,23 @@ class Shell:
             history.discard_pending(self.db)
             flow._set_handled(False)
             self.say("[green]discarded[/]; nothing was scrobbled")
+            if self.cfg.device_path.is_dir() and self.yes("Also remove those files from the headphones?", default=True):
+                self.say(f"[green]removed {flow.clear_orphans(self.cfg, self.db)} files[/]")
+
+    def adopt(self) -> None:
+        sid = flow.adopt_orphans(self.cfg, self.db)
+        if sid is None:
+            self.say("[yellow]No leftover staged files on the headphones.[/]")
+        else:
+            flow._set_handled(True)
+            self.say(f"[green]session {sid} is the current playlist again[/]; scrobble it after your swim with c")
+
+    def clear(self) -> None:
+        n, sid = flow.orphans(self.cfg, self.db)
+        if not n:
+            self.say("[yellow]No leftover staged files on the headphones.[/]")
+        elif self.yes(f"Remove the {n} leftover tracks of session {sid} from the headphones?", default=True):
+            self.say(f"[green]removed {flow.clear_orphans(self.cfg, self.db)} files[/]")
 
     def agent(self) -> None:
         on = self.act.agent_installed()
@@ -388,12 +521,15 @@ class Shell:
     def run(self) -> None:
         handlers: dict[str, Callable[[], None]] = {
             "p": self.playlist, "r": self.reroll, "a": self.add_track, "s": self.stats, "w": self.wishlist,
-            "y": self.sync, "c": self.scrobble, "k": self.skip, "o": lambda: self.say(self.act.podcasts()),
+            "y": self.sync, "c": self.scrobble, "k": self.skip, "u": self.adopt, "x": self.clear,
+            "o": lambda: self.say(self.act.podcasts()),
             "e": lambda: [self.say(x) for x in self.act.on_connect()], "g": self.agent,
             "?": lambda: self.say(HELP), "h": lambda: self.say(HELP),
         }
         names = {"playlist": "p", "reroll": "r", "add": "a", "stats": "s", "wishlist": "w", "sync": "y", "scrobble": "c",
                  "skip": "k", "podcasts": "o", "on-connect": "e", "agent": "g", "help": "?", "quit": "q", "exit": "q"}
+        if self.keys:
+            return self.run_keys(handlers)
         self.dashboard()
         while True:
             key = self.ask("\nswimscrobble>").lower()
@@ -416,6 +552,50 @@ class Shell:
             except Exception as e:  # a failing action must not kill the shell
                 self.say(f"[red]error: {e}[/]")
             self.dashboard()
+
+
+    MENU = [
+        Item("p", "Playlist", "view and edit the staged playlist"),
+        Item("r", "Reroll", "stage a new playlist"),
+        Item("a", "Add track", "from your library or YouTube Music"),
+        Item("s", "Stats", "listening, pool and swim statistics"),
+        Item("w", "Wishlist", "tracks you play but do not own"),
+        Item("y", "Sync", "Last.fm history, pool, downloads"),
+        Item("c", "Scrobble", "settle the last swim"),
+        Item("k", "Skip", "forget the staged playlist (no swim)"),
+        Item("u", "Use leftovers", "files on the headphones from a discarded session"),
+        Item("x", "Remove leftovers", "delete those files"),
+        Item("o", "Podcasts", "mirror the Pocket Casts queue"),
+        Item("e", "On-connect", "run the whole routine now"),
+        Item("g", "Agent", "install / remove the plug-in agent"),
+        Item("?", "Help", "what everything does"),
+        Item("q", "Quit"),
+    ]
+
+    def run_keys(self, handlers: dict[str, Callable[[], None]]) -> None:
+        """Arrow-key menu: the dashboard stays on top, Enter or a shortcut letter runs an action."""
+        cursor = 0
+        while True:
+            self.console.clear()
+            self.dashboard()
+            try:
+                key = self.keys.menu(self.MENU, start=cursor)
+            except EOFError:  # terminal closed / input ended
+                return
+            if key in (None, "q"):
+                return
+            cursor = next((i for i, it in enumerate(self.MENU) if it.key == key), 0)
+            self._said = 0
+            try:
+                handlers[key]()
+            except _Cancel:
+                self.say("[dim]cancelled[/]")
+            except KeyboardInterrupt:
+                self.say("\n[dim]interrupted[/]")
+            except Exception as e:  # a failing action must not kill the shell
+                self.say(f"[red]error: {e}[/]")
+            if self._said:  # something was printed: let it be read before the screen is cleared
+                self.keys.pause("press any key to go back")
 
 
 class _Cancel(Exception):
