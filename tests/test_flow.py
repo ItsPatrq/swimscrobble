@@ -1,0 +1,115 @@
+import plistlib
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from swimscrobble import flow, history, launchd
+from swimscrobble.config import Config
+from swimscrobble.library import Track
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWIMSCROBBLE_HOME", str(tmp_path / "home"))
+    music = tmp_path / "music"
+    music.mkdir()
+    lib = []
+    for i in range(30):
+        f = music / f"{i:02d} - song{i}.mp3"
+        f.write_bytes(b"x" * 10)
+        lib.append(Track(f, f"Artist{i % 5}", f"Song{i}", "Alb", 300))
+    vol = tmp_path / "Volumes"
+    (vol / "SWIM PRO" / "Music").mkdir(parents=True)
+    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60)
+    db = history.connect(tmp_path / "h.db")
+    return cfg, db, lib, vol
+
+
+def run(cfg, db, lib, now=datetime(2026, 10, 25, 9, 0), **kw):
+    msgs = []
+    log = flow.on_connect(cfg, db, now, msgs.append, library_loader=lambda _: lib, **kw)
+    return log, msgs
+
+
+def test_no_device(env):
+    cfg, db, lib, vol = env
+    (vol / "SWIM PRO" / "Music").rmdir(); (vol / "SWIM PRO").rmdir()
+    assert run(cfg, db, lib)[0] == ["device not connected"]
+
+
+def test_first_connect_stages_session(env):
+    cfg, db, lib, vol = env
+    log, msgs = run(cfg, db, lib)
+    staged = sorted(p.name for p in (vol / "SWIM PRO" / "Music").iterdir())
+    assert len(staged) == 12 and staged[0].startswith("001 - ")
+    assert history.pending_session(db) is not None and "staged" in msgs[-1]
+
+
+def test_same_connection_is_not_reprocessed(env):
+    cfg, db, lib, _ = env
+    run(cfg, db, lib)
+    assert run(cfg, db, lib)[0] == ["already handled this connection"]
+
+
+def test_reconnect_awaits_confirmation_without_auto_submit(env):
+    cfg, db, lib, vol = env
+    run(cfg, db, lib)
+    (vol / "SWIM PRO").rename(vol / "gone"); assert run(cfg, db, lib)[0] == ["device not connected"]
+    (vol / "gone").rename(vol / "SWIM PRO")
+    log, _ = run(cfg, db, lib, now=datetime(2026, 10, 25, 11, 0))
+    assert log == ["awaiting confirmation"]
+    assert history.pending_session(db) is not None  # not overwritten by a new plan
+    csv = next((Path(flow.config_dir()) / "pending").glob("*.csv")).read_text()
+    assert csv.count("\n") == 13  # header + 12 tracks
+
+
+def test_auto_submit_scrobbles_then_stages_next(env):
+    cfg, db, lib, vol = env
+    cfg.auto_submit = True
+    run(cfg, db, lib)
+    flow._set_handled(False)
+    sent = []
+    log, msgs = run(cfg, db, lib, now=datetime(2026, 10, 25, 10, 0),
+                    lastfm_submit=lambda s: (sent.append(s) or len(s)))
+    assert len(sent) == 1 and len(sent[0]) == 12
+    # session ended at plug-in time: last scrobble starts before 10:00, first is 60 min earlier
+    assert sent[0][0].timestamp == datetime(2026, 10, 25, 9, 0) and sent[0][-1].timestamp < datetime(2026, 10, 25, 10)
+    assert log[0] == "scrobbled 12 tracks" and "staged session" in log[-1]
+    second = {p.name for p in (vol / "SWIM PRO" / "Music").iterdir()}
+    assert len(second) == 12  # old staged files cleared, new ones in
+    assert history.play_counts(db)
+
+
+def test_failed_submit_keeps_session_pending(env):
+    cfg, db, lib, _ = env
+    cfg.auto_submit = True
+    run(cfg, db, lib)
+    flow._set_handled(False)
+    def boom(s): raise RuntimeError("network")
+    log, msgs = run(cfg, db, lib, now=datetime(2026, 10, 25, 10), lastfm_submit=boom)
+    assert log[0].startswith("failed") and history.pending_session(db) is not None
+
+
+def test_clear_staged_only_touches_prefixed_files(tmp_path):
+    (tmp_path / "001 - a.mp3").write_bytes(b"x")
+    (tmp_path / "01 - keep.mp3").write_bytes(b"x")
+    m = {"tracks": [{"staged": "001 - a.mp3"}, {"staged": "01 - keep.mp3"}]}
+    assert flow.clear_staged(tmp_path, m) == 1 and (tmp_path / "01 - keep.mp3").exists()
+
+
+def test_podcast_failure_does_not_block_staging(env):
+    cfg, db, lib, _ = env
+    def bad(): raise RuntimeError("401")
+    log, _ = run(cfg, db, lib, podcast_sync=bad)
+    assert any("podcasts failed" in l for l in log) and any("staged session" in l for l in log)
+
+
+def test_launchd_plist_and_install(tmp_path):
+    data = plistlib.loads(launchd.build_plist("/py", "/Volumes", tmp_path))
+    assert data["WatchPaths"] == ["/Volumes"] and data["ProgramArguments"][-1] == "on-connect"
+    calls = []
+    p = launchd.install(501, tmp_path / "a.plist", lambda cmd, **kw: calls.append(cmd), python="/py")
+    assert p.exists() and calls[-1][:3] == ["launchctl", "bootstrap", "gui/501"]
+    launchd.uninstall(501, p, lambda cmd, **kw: calls.append(cmd))
+    assert not p.exists()

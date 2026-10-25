@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-
-from collections.abc import Callable
 
 from .planner import PlannedTrack
 

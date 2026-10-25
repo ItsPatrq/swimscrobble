@@ -66,7 +66,7 @@ def load_session_key() -> str:
     try:
         return json.loads(SESSION_FILE.read_text())["session_key"]
     except FileNotFoundError:
-        raise SystemExit("not authenticated; run: swimscrobble lastfm-auth")
+        raise SystemExit("not authenticated; run: swimscrobble lastfm-auth") from None
 
 
 def check_window(scrobbles: list[Scrobble], now: float | None = None) -> list[Scrobble]:

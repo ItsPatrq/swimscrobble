@@ -7,6 +7,10 @@ Goal: swim with offline headphones, then confidently scrobble what played.
 - A session is ~60 min; every track that fits the budget counts as played.
 - Device has no play log (investigated: FAT32, `SYSTEM/allsong.lst` + `order.lst` are only an index and order).
 
+## Status
+All milestones below are implemented and unit/e2e tested without hardware, except live verification
+against Last.fm, Pocket Casts, the launchd install and device playback order (see issues).
+
 ## Milestones
 1. **Session planner (done, v0)** – scan library, seeded shuffle, time-budget fit, prefixed staging, manifest.
 2. **Scrobbling** – timestamp math (done), CSV (done), Last.fm submit, ListenBrainz submit, 14-day window check.

@@ -25,6 +25,9 @@ class Config:
     podcast_dir: str = "~/Music/swim-podcasts"
     max_podcasts: int = 10
     arc: bool = False
+    volumes_dir: str = "/Volumes"
+    stage_subdir: str = ""  # under the device music folder; "" = its root
+    lastfm_user: str = ""
     no_repeat_days: int = 7
 
     @property
@@ -37,7 +40,11 @@ class Config:
 
     @property
     def device_path(self) -> Path:
-        return Path("/Volumes") / self.device_name
+        return Path(self.volumes_dir) / self.device_name
+
+    @property
+    def stage_path(self) -> Path:
+        return self.device_path / self.device_music_subdir / self.stage_subdir
 
 
 def load(path: Path | None = None) -> Config:

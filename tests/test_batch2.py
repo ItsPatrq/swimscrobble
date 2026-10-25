@@ -1,6 +1,7 @@
+import os
 from pathlib import Path
 
-from swimscrobble import acquire, generator, history, matcher, poolsync, pocketcasts, taste, ytm
+from swimscrobble import acquire, generator, history, matcher, pocketcasts, poolsync, taste, ytm
 from swimscrobble.library import Track
 from swimscrobble.planner import plan_session
 
@@ -62,7 +63,7 @@ def test_taste_parsing():
             "user.getLovedTracks": {"lovedtracks": {"track": [{"name": "L", "artist": {"name": "B"}}]}},
             "track.getSimilar": {"similartracks": {"track": [{"name": "X", "artist": {"name": "C"}, "match": "0.5"}]}},
         }[m]
-    import os; os.environ["LASTFM_API_KEY"] = "k"
+    os.environ["LASTFM_API_KEY"] = "k"
     assert taste.top_tracks("u", transport=tr) == [("A", "S", 9)]
     assert taste.loved_tracks("u", transport=tr) == [("B", "L")]
     assert taste.similar("A", "S", transport=tr) == [("C", "X", 0.5)]
