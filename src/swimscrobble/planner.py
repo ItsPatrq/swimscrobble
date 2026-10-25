@@ -26,11 +26,27 @@ def plan_session(
     minutes: float = 60,
     seed: int | None = None,
     avoid_repeat_artist: bool = True,
+    exclude: set[tuple[str, str]] | None = None,
+    arc: bool = False,
+    weights: dict[tuple[str, str], float] | None = None,
 ) -> list[PlannedTrack]:
     """Shuffle, then greedily take every track that still fits the budget."""
     rng = random.Random(seed)
     pool = dedupe(tracks)
-    rng.shuffle(pool)
+    if exclude:
+        # recently played; fall back to the full pool if exclusion would leave too little
+        fresh = [t for t in pool if key_of(t) not in exclude]
+        if sum(t.duration for t in fresh) >= minutes * 60:
+            pool = fresh
+    if weights:
+        # Efraimidis-Spirakis weighted shuffle: higher weight -> likelier to land early
+        floor = 0.05
+        pool.sort(
+            key=lambda t: rng.random() ** (1 / max(weights.get(key_of(t), floor), 1e-9)),
+            reverse=True,
+        )
+    else:
+        rng.shuffle(pool)
     budget = minutes * 60
     chosen: list[Track] = []
     total = 0.0
@@ -38,9 +54,27 @@ def plan_session(
         if total + t.duration <= budget:
             chosen.append(t)
             total += t.duration
-    if avoid_repeat_artist:
+    if arc:
+        chosen = bpm_arc(chosen)
+    elif avoid_repeat_artist:
         chosen = _spread_artists(chosen)
     return [PlannedTrack(i + 1, t) for i, t in enumerate(chosen)]
+
+
+def key_of(t: Track) -> tuple[str, str]:
+    return (t.artist.casefold(), t.title.casefold())
+
+
+def bpm_arc(tracks: list[Track]) -> list[Track]:
+    """Warm-up -> peak -> cool-down: slowest tracks at the ends, fastest in the middle."""
+    known = sorted(t.bpm for t in tracks if t.bpm)
+    mid = known[len(known) // 2] if known else 0.0
+    ranked = sorted(tracks, key=lambda t: t.bpm or mid)
+    front: list[Track] = []
+    back: list[Track] = []
+    for i, t in enumerate(ranked):
+        (front if i % 2 == 0 else back).append(t)
+    return front + back[::-1]
 
 
 def dedupe(tracks: list[Track]) -> list[Track]:
@@ -48,7 +82,7 @@ def dedupe(tracks: list[Track]) -> list[Track]:
     seen: set[tuple[str, str]] = set()
     out = []
     for t in tracks:
-        key = (t.artist.casefold(), t.title.casefold())
+        key = key_of(t)
         if key in seen:
             continue
         seen.add(key)

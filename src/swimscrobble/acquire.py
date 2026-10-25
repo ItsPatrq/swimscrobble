@@ -1,0 +1,33 @@
+"""Fetch files for playlist entries missing locally (explicit opt-in, via yt-dlp)."""
+from __future__ import annotations
+
+import subprocess
+from collections.abc import Callable
+from pathlib import Path
+
+from .ytm import Entry
+
+
+def download_command(entry: Entry, dest: Path) -> list[str]:
+    return [
+        "yt-dlp", "-x", "--audio-format", "mp3", "--embed-metadata", "--no-playlist",
+        "-o", str(dest / "%(artist,channel)s - %(title)s.%(ext)s"),
+        f"https://music.youtube.com/watch?v={entry.video_id}",
+    ]
+
+
+def acquire(
+    entries: list[Entry],
+    dest: Path,
+    run: Callable = subprocess.run,
+    ask: Callable[[str], str] | None = None,
+) -> list[Entry]:
+    """Download each entry; `ask` (if given) gates the batch. Returns entries that failed."""
+    if ask and ask(f"Download {len(entries)} missing tracks into {dest}? [y/N] ").strip().lower() != "y":
+        return list(entries)
+    dest.mkdir(parents=True, exist_ok=True)
+    failed = []
+    for e in entries:
+        if run(download_command(e, dest)).returncode != 0:
+            failed.append(e)
+    return failed

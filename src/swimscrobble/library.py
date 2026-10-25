@@ -16,6 +16,7 @@ class Track:
     title: str
     album: str
     duration: float  # seconds
+    bpm: float | None = None
 
 
 def _first(tags, key: str, default: str = "") -> str:
@@ -23,6 +24,13 @@ def _first(tags, key: str, default: str = "") -> str:
     if not value:
         return default
     return str(value[0]).strip() or default
+
+
+def _bpm(tags) -> float | None:
+    try:
+        return float(_first(tags, "bpm")) or None
+    except ValueError:
+        return None
 
 
 def read_track(path: Path) -> Track | None:
@@ -35,6 +43,7 @@ def read_track(path: Path) -> Track | None:
         title=_first(audio.tags, "title", path.stem),
         album=_first(audio.tags, "album"),
         duration=float(audio.info.length),
+        bpm=_bpm(audio.tags),
     )
 
 
