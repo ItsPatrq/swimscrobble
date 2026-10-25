@@ -10,6 +10,7 @@ from pathlib import Path
 from . import config as cfgmod
 from . import history
 from .library import scan
+from .mix import build_mix
 from .planner import plan_session, total_seconds
 from .scrobble import build_scrobbles, confirm, skip_positions, to_csv, trim_to_played
 from .session import from_manifest, to_manifest
@@ -124,7 +125,7 @@ def cmd_playlist(a) -> None:
 
 
 def cmd_sync(a) -> None:
-    from . import generator, poolsync, taste, ytm
+    from . import acquire, generator, poolsync, taste, ytm
 
     cfg = cfgmod.load()
     db = history.connect()
@@ -135,15 +136,46 @@ def cmd_sync(a) -> None:
         playlist = [generator.key(e.artist, e.title) for e in ytm.fetch(cfg.ytm_playlist)]
     loved, top, sim = [], [], []
     if cfg.lastfm_user:
+        top = taste.top_tracks(cfg.lastfm_user, period=cfg.taste_period)
         loved = taste.loved_tracks(cfg.lastfm_user)
-        top = taste.top_tracks(cfg.lastfm_user)
-        for artist, title in loved[:10]:
+        for artist, title, _ in top[:10]:  # recommendations seeded by what you played most lately
             sim += taste.similar(artist, title)
     cands = generator.score_candidates(playlist, loved, top, sim)
     rep = poolsync.sync_pool(db, cands, lib_keys, history.play_counts(db), a.size)
     print(f"added {len(rep.added)}, retired {len(rep.retired)}, wanted-but-missing {len(rep.missing)}")
     for c in rep.missing[:20]:
-        print(f"  missing: {c.artist} - {c.title}")
+        print(f"  missing ({','.join(sorted(c.sources))}): {c.artist} - {c.title}")
+    if a.fetch_missing and rep.missing:
+        wanted = [acquire.resolve(c.artist, c.title) for c in rep.missing[: a.fetch_missing]]
+        failed = acquire.acquire([e for e in wanted if e], cfg.music_path, ask=input)
+        print(f"fetched {len([e for e in wanted if e]) - len(failed)}; re-run sync to add them to the pool")
+
+
+def cmd_mix(a) -> None:
+    from . import flow
+    from .energy import cached_features
+
+    cfg = cfgmod.load()
+    db = history.connect()
+    library = scan(Path(a.music or cfg.music_path))
+    plan = build_mix(
+        library, flow.pool_candidates(db), lambda t: cached_features(db, t),
+        minutes=a.minutes or cfg.minutes, seed=a.seed, rec_ratio=cfg.rec_ratio, min_energy=a.min_energy or cfg.min_energy,
+        plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
+    )
+    for p in plan:
+        print(f"{p.position:03d}  {_fmt(p.track.duration)}  e={p.energy:.2f}  {p.source:3}  {p.track.artist} - {p.track.title}")
+    recs = sum(1 for p in plan if p.source == "rec")
+    print(f"\n{len(plan)} tracks ({recs} recommendations), {_fmt(total_seconds(plan))}")
+    Path(a.out).write_text(json.dumps(to_manifest(plan, a.seed, a.minutes or cfg.minutes), indent=2, ensure_ascii=False))
+    if a.stage:
+        import shutil
+
+        dest = Path(a.stage)
+        dest.mkdir(parents=True, exist_ok=True)
+        for p in plan:
+            shutil.copy2(p.track.path, dest / p.staged_name)
+        print(f"staged {len(plan)} files into {dest}")
 
 
 def cmd_podcasts(a) -> None:
@@ -210,6 +242,15 @@ def main(argv=None) -> None:
     scrobble_opts(sp, False)
     sp.set_defaults(func=cmd_scrobble_pending)
 
+    mx = sub.add_parser("mix", help="energising favourites + a few recommendations (uses pool, energy analysis)")
+    mx.add_argument("music", nargs="?")
+    mx.add_argument("--minutes", type=float)
+    mx.add_argument("--seed", type=int)
+    mx.add_argument("--min-energy", type=float)
+    mx.add_argument("--out", default="session.json")
+    mx.add_argument("--stage")
+    mx.set_defaults(func=cmd_mix)
+
     sub.add_parser("lastfm-auth", help="authorise on Last.fm").set_defaults(func=cmd_lastfm_auth)
 
     pl = sub.add_parser("playlist", help="match a YouTube Music playlist to local files")
@@ -219,6 +260,8 @@ def main(argv=None) -> None:
 
     sy = sub.add_parser("sync", help="refresh the swim pool from playlist + Last.fm taste")
     sy.add_argument("--size", type=int, default=150)
+    sy.add_argument("--fetch-missing", type=int, default=0, metavar="N",
+                    help="offer to download up to N wanted-but-missing tracks")
     sy.set_defaults(func=cmd_sync)
 
     po = sub.add_parser("podcasts", help="mirror the Pocket Casts Up Next queue")

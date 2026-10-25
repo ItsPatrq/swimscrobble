@@ -6,6 +6,7 @@ import pytest
 
 from swimscrobble import flow, history, launchd
 from swimscrobble.config import Config
+from swimscrobble.energy import Features
 from swimscrobble.library import Track
 
 
@@ -28,7 +29,8 @@ def env(tmp_path, monkeypatch):
 
 def run(cfg, db, lib, now=datetime(2026, 10, 25, 9, 0), **kw):
     msgs = []
-    log = flow.on_connect(cfg, db, now, msgs.append, library_loader=lambda _: lib, **kw)
+    log = flow.on_connect(cfg, db, now, msgs.append, library_loader=lambda _: lib,
+                          feature_of=lambda t: Features(120, -7, 150, 0.6, 0.8), **kw)
     return log, msgs
 
 

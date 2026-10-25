@@ -6,9 +6,17 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
 
 ## The flow
 
-1. **Plan**: shuffle your library (taste-weighted, no recent repeats, optional BPM arc), keep every
-   track that fits the time budget, copy them to the device as `001 - `, `002 - ` ... Headphones play
-   alphabetically, so filename order is play order.
+1. **Plan** (the *mix*): build an energising, semi-random session that fits the time budget and copy
+   it to the device as `001 - `, `002 - ` ... Headphones play alphabetically, so filename order is
+   play order. How the mix is built:
+   - *Favourites* (about 80%): tracks in your YouTube Music playlist, your Last.fm top tracks of the
+     last 30 days (`taste_period`), or loved. *Recommendations* (about 20%, `rec_ratio`): tracks
+     Last.fm only knows as "similar" to your recent top tracks, spread evenly through the session.
+   - *Energy*: every file is analysed locally (tempo, loudness, onset density, pulse clarity; cached).
+     Tracks below `min_energy` (default 0.5, i.e. slow ballads and ambient pieces) are dropped, and
+     high-energy tracks are sampled more often.
+   - *Order*: a randomised walk that avoids big energy jumps and back-to-back artists. Tracks you
+     swam to in the last `no_repeat_days` are skipped, and heavily swum ones fade out.
 2. **Swim.**
 3. **Scrobble**: next time you plug in, the session is timestamped back from plug-in time and sent to
    Last.fm (and optionally ListenBrainz).
@@ -33,7 +41,10 @@ session_offset_minutes = 0   # gap between finishing the swim and plugging in
 ytm_playlist = "https://music.youtube.com/playlist?list=..."
 lastfm_user = "yourname"
 listenbrainz = false
-arc = false                  # warm-up -> peak -> cool-down by BPM tag
+arc = false                  # (plain `plan` only) warm-up -> peak -> cool-down by BPM tag
+taste_period = "1month"      # Last.fm window for top tracks
+rec_ratio = 0.2              # share of the session for recommendations
+min_energy = 0.5             # 0..1; raise to cut more mid-tempo tracks
 max_podcasts = 10
 no_repeat_days = 7
 ```
@@ -42,12 +53,13 @@ no_repeat_days = 7
 
 | command | what |
 |---|---|
-| `plan [dir] --stage DIR` | build a session, write `session.json`, optionally copy with prefixes |
+| `mix [dir] [--minutes N] [--min-energy X] [--stage DIR]` | the energising favourites + recommendations session (shows energy and fav/rec per track) |
+| `plan [dir] --stage DIR` | plain shuffle without taste or energy, for comparison |
 | `scrobble session.json --start ISO [--played-minutes N] [--skip 3,7] [--confirm] [--submit]` | CSV by default; `--submit` sends to Last.fm |
 | `scrobble-pending` | scrobble the last staged session (start inferred from now) |
 | `lastfm-auth` | one-time Last.fm authorisation (`LASTFM_API_KEY`/`LASTFM_API_SECRET`) |
 | `playlist [url] [--download]` | match a YouTube Music playlist to local files; offer to fetch missing ones |
-| `sync` | refresh the swim pool from the playlist + Last.fm loved/top/similar |
+| `sync [--fetch-missing N]` | refresh the swim pool from the playlist + 30-day Last.fm top/loved/similar; optionally offer to download N wanted tracks you don't have yet |
 | `podcasts` | mirror Pocket Casts Up Next (`POCKETCASTS_EMAIL`/`POCKETCASTS_PASSWORD`) |
 | `on-connect` | the automatic flow (settle previous session, podcasts, plan + stage next) |
 | `agent install` | launchd agent that runs `on-connect` when volumes change |
@@ -72,6 +84,7 @@ macOS may ask for permission to access removable volumes for the agent's Python.
 - Pocket Casts has no public API; the client uses the reverse-engineered endpoints and Pocket Casts
   does not support third-party clients. Use your own account at your own risk.
 - `playlist --download` uses yt-dlp; make sure you have the right to download what you fetch.
+- Energy is a heuristic from the audio (it catches ballads/ambient well, but fast-but-mellow or slow-but-heavy tracks can misfire). Tune `min_energy`, check with `swimscrobble mix`.
 - Whether the firmware really plays strictly by filename is unverified, see issue #2.
 
 MIT licensed.

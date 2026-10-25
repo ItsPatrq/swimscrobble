@@ -16,7 +16,8 @@ def to_manifest(plan: list[PlannedTrack], seed: int | None, minutes: float) -> d
         "tracks": [
             {"position": p.position, "file": str(p.track.path), "staged": p.staged_name,
              "artist": p.track.artist, "title": p.track.title, "album": p.track.album,
-             "duration": round(p.track.duration)}
+             "duration": round(p.track.duration),
+             "source": p.source, "energy": p.energy}
             for p in plan
         ],
     }
@@ -24,6 +25,11 @@ def to_manifest(plan: list[PlannedTrack], seed: int | None, minutes: float) -> d
 
 def from_manifest(manifest: dict) -> list[PlannedTrack]:
     return [
-        PlannedTrack(t["position"], Track(Path(t["file"]), t["artist"], t["title"], t["album"], t["duration"]))
+        PlannedTrack(
+            t["position"],
+            Track(Path(t["file"]), t["artist"], t["title"], t["album"], t["duration"]),
+            t.get("source", ""),
+            t.get("energy"),
+        )
         for t in manifest["tracks"]
     ]

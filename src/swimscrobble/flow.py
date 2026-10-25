@@ -15,10 +15,10 @@ from pathlib import Path
 
 from . import history, lastfm, listenbrainz
 from .config import Config, config_dir
-from .generator import Candidate, pool_weights
+from .energy import Features, cached_features
+from .generator import Candidate
 from .library import Track, scan
-from .planner import plan_session
-from .poolsync import active_keys
+from .mix import build_mix
 from .scrobble import build_scrobbles, to_csv
 from .session import from_manifest, to_manifest
 
@@ -93,21 +93,28 @@ def clear_staged(stage_dir: Path, previous_manifest: dict | None) -> int:
     return n
 
 
-def plan_and_stage(db, cfg: Config, library: list[Track], seed: int | None = None, previous: dict | None = None) -> dict:
+def pool_candidates(db) -> list[Candidate]:
+    return [
+        Candidate(r["artist"], r["title"], float(r["score"]), set(filter(None, (r["source"] or "").split(","))))
+        for r in db.execute("SELECT artist, title, score, source FROM pool WHERE retired=0")
+    ]
+
+
+def plan_and_stage(
+    db,
+    cfg: Config,
+    library: list[Track],
+    seed: int | None = None,
+    previous: dict | None = None,
+    feature_of: Callable[[Track], Features] | None = None,
+) -> dict:
     stage_dir = cfg.stage_path
     stage_dir.mkdir(parents=True, exist_ok=True)
     clear_staged(stage_dir, previous)
-    weights = None
-    keys = active_keys(db)
-    if keys:
-        library = [t for t in library if (t.artist.casefold(), t.title.casefold()) in keys] or library
-        cands = [Candidate(a, t, float(r["score"]), set()) for r in
-                 db.execute("SELECT artist, title, score FROM pool WHERE retired=0")
-                 for a, t in [(r["artist"], r["title"])]]
-        weights = pool_weights(cands, history.play_counts(db))
-    plan = plan_session(
-        library, cfg.minutes, seed,
-        exclude=history.recent_plays(db, cfg.no_repeat_days), arc=cfg.arc, weights=weights,
+    plan = build_mix(
+        library, pool_candidates(db), feature_of or (lambda t: cached_features(db, t)),
+        minutes=cfg.minutes, seed=seed, rec_ratio=cfg.rec_ratio, min_energy=cfg.min_energy,
+        plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
     )
     for p in plan:
         shutil.copy2(p.track.path, stage_dir / p.staged_name)
@@ -122,6 +129,7 @@ def on_connect(
     now: datetime | None = None,
     notify: Callable[[str], None] = print,
     library_loader: Callable[[Path], list[Track]] = scan,
+    feature_of: Callable[[Track], Features] | None = None,
     podcast_sync: Callable[[], dict] | None = None,
     **deps,
 ) -> list[str]:
@@ -147,7 +155,7 @@ def on_connect(
 
     prev_row = db.execute("SELECT manifest FROM sessions WHERE staged_dir IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
     previous = json.loads(prev_row["manifest"]) if prev_row else None
-    manifest = plan_and_stage(db, cfg, library_loader(cfg.music_path), previous=previous)
+    manifest = plan_and_stage(db, cfg, library_loader(cfg.music_path), previous=previous, feature_of=feature_of)
     log.append(f"staged session {manifest['id']}: {len(manifest['tracks'])} tracks")
     notify(f"swimscrobble: staged {len(manifest['tracks'])} tracks for the next swim")
     return log

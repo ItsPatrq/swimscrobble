@@ -15,6 +15,8 @@ from .library import Track
 class PlannedTrack:
     position: int
     track: Track
+    source: str = ""  # "fav" | "rec" when built by the mixer
+    energy: float | None = None
 
     @property
     def staged_name(self) -> str:

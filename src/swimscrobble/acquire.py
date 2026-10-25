@@ -31,3 +31,12 @@ def acquire(
         if run(download_command(e, dest)).returncode != 0:
             failed.append(e)
     return failed
+
+
+def resolve(artist: str, title: str, fetch: Callable = None) -> Entry | None:
+    """Find the best YouTube Music match for a wanted track (first search hit)."""
+    from . import ytm
+
+    fetch = fetch or ytm.fetch
+    hits = fetch(f"ytsearch1:{artist} {title}")
+    return hits[0] if hits else None

@@ -25,6 +25,9 @@ class Config:
     podcast_dir: str = "~/Music/swim-podcasts"
     max_podcasts: int = 10
     arc: bool = False
+    taste_period: str = "1month"  # Last.fm window: 7day | 1month | 3month | ...
+    rec_ratio: float = 0.2  # share of the session given to recommendations
+    min_energy: float = 0.5  # drop slow/ballad tracks below this energy (0..1)
     volumes_dir: str = "/Volumes"
     stage_subdir: str = ""  # under the device music folder; "" = its root
     lastfm_user: str = ""
