@@ -16,6 +16,10 @@ from .scrobble import build_scrobbles, confirm, to_csv
 from .session import played_part, to_manifest
 
 
+def _scan(cfg, folder=None):
+    return scan(Path(folder) if folder else cfg.music_path, exclude=tuple(cfg.exclude_dirs), min_seconds=cfg.min_track_seconds)
+
+
 def _fmt(seconds: float) -> str:
     return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
 
@@ -28,7 +32,7 @@ def notify(msg: str) -> None:
 
 def cmd_plan(a) -> None:
     cfg = cfgmod.load()
-    tracks = scan(Path(a.music or cfg.music_path))
+    tracks = _scan(cfg, a.music)
     swim = a.minutes or cfg.minutes
     plan = plan_session(tracks, swim * cfg.buffer_factor, a.seed, arc=cfg.arc)
     for p in plan:
@@ -113,53 +117,77 @@ def cmd_lastfm_auth(a) -> None:
 
 
 def cmd_playlist(a) -> None:
-    from . import acquire, matcher, ytm
+    """Show which playlist tracks exist under ~/Music; --download fetches the rest with ymp3's command."""
+    from . import acquire, ytm
+    from .link import LocalIndex
 
     cfg = cfgmod.load()
     url = a.url or cfg.ytm_playlist
     if not url:
         raise SystemExit("pass a playlist URL or set ytm_playlist in config")
-    results = matcher.match(ytm.fetch(url), scan(cfg.music_path))
-    for r in results:
-        print(f"{r.status:9} {r.score:.2f}  {r.entry.artist} - {r.entry.title}"
-              + (f"  -> {r.track.path.name}" if r.track else ""))
-    missing = [r.entry for r in results if r.status == matcher.MISSING]
+    idx = LocalIndex(_scan(cfg))
+    missing = []
+    for e in ytm.fetch(url, cookies=cfg.cookies_path):
+        t = idx.find(e.artist, e.title, e.duration)
+        print(f"{'found  ' if t else 'MISSING'}  #{e.index:<3} {e.artist} - {e.title}" + (f"  -> {t.path}" if t else ""))
+        if not t:
+            missing.append(e)
+    print(f"\n{len(missing)} missing")
     if a.download and missing:
-        failed = acquire.acquire(missing, cfg.music_path, ask=input)
-        print(f"{len(missing) - len(failed)} downloaded, {len(failed)} failed")
+        ok = acquire.download_missing(cfg, url, missing, ask=input)
+        print("done; re-run to verify" if ok else "download skipped/failed")
 
 
-def run_sync(cfg, db, size: int = 150):
-    """Refresh the swim pool from the playlist + Last.fm taste. Returns the SyncReport."""
-    from . import generator, poolsync, taste, ytm
+def _taste_fetch(user: str, period: str):
+    from . import taste
 
-    library = scan(cfg.music_path)
-    lib_keys = {generator.key(t.artist, t.title) for t in library}
-    playlist = []
-    if cfg.ytm_playlist:
-        playlist = [generator.key(e.artist, e.title) for e in ytm.fetch(cfg.ytm_playlist)]
-    loved, top, sim = [], [], []
-    if cfg.lastfm_user:
-        top = taste.top_tracks(cfg.lastfm_user, period=cfg.taste_period)
-        loved = taste.loved_tracks(cfg.lastfm_user)
-        for artist, title, _ in top[:10]:  # recommendations seeded by what you played most lately
-            sim += taste.similar(artist, title)
-    cands = generator.score_candidates(playlist, loved, top, sim)
-    return poolsync.sync_pool(db, cands, lib_keys, history.play_counts(db), size)
+    top = taste.top_tracks(user, period=period)
+    loved = taste.loved_tracks(user)
+    sim = []
+    for artist, title, _ in top[:10]:  # recommendations seeded by what you played most lately
+        sim += taste.similar(artist, title)
+    return loved, top, sim
+
+
+def run_sync(cfg, db, size: int = 150, download: str | bool = False):
+    """Scan the library, match the playlist + Last.fm taste to it, refresh the pool.
+
+    download: False = report only, "ask" = prompt first, True = fetch missing playlist tracks.
+    """
+    from . import acquire, libsync, ytm
+
+    def dl(missing):
+        ask = input if download == "ask" else None
+        ok = acquire.download_missing(cfg, cfg.ytm_playlist, missing, ask=ask)
+        print("download finished" if ok else "download skipped/failed")
+
+    return libsync.sync_library(
+        cfg, db, size=size,
+        fetch_playlist=lambda url: ytm.fetch(url, cookies=cfg.cookies_path),
+        taste_fetch=_taste_fetch,
+        download=dl if download else None,
+    )
 
 
 def cmd_sync(a) -> None:
     from . import acquire
 
     cfg = cfgmod.load()
-    rep = run_sync(cfg, history.connect(), a.size)
-    print(f"added {len(rep.added)}, retired {len(rep.retired)}, wanted-but-missing {len(rep.missing)}")
-    for c in rep.missing[:20]:
-        print(f"  missing ({','.join(sorted(c.sources))}): {c.artist} - {c.title}")
-    if a.fetch_missing and rep.missing:
-        wanted = [acquire.resolve(c.artist, c.title) for c in rep.missing[: a.fetch_missing]]
-        failed = acquire.acquire([e for e in wanted if e], cfg.music_path, ask=input)
-        print(f"fetched {len([e for e in wanted if e]) - len(failed)}; re-run sync to add them to the pool")
+    rep = run_sync(cfg, history.connect(), a.size, download=("ask" if not a.yes else True) if a.download else False)
+    p = rep.pool
+    print(f"pool: +{len(p.added)} -{len(p.retired)}; playlist {rep.playlist_total - len(rep.playlist_missing)}/"
+          f"{rep.playlist_total} found locally")
+    for e in rep.playlist_missing:
+        print(f"  missing from library: #{e.index} {e.artist} - {e.title}")
+    for c in p.missing[:20]:
+        print(f"  recommended, not owned: {c.artist} - {c.title}")
+    if a.fetch_missing and p.missing:
+        import subprocess
+
+        for c in p.missing[: a.fetch_missing]:
+            url = f"ytsearch1:{c.artist} {c.title}"
+            subprocess.run(acquire.playlist_download_command(cfg, url))
+        print("fetched; re-run sync to add them to the pool")
 
 
 def cmd_mix(a) -> None:
@@ -169,7 +197,7 @@ def cmd_mix(a) -> None:
     cfg = cfgmod.load()
     db = history.connect()
     swim = a.minutes or cfg.minutes
-    library = scan(Path(a.music or cfg.music_path))
+    library = _scan(cfg, a.music)
     plan = build_mix(
         library, flow.pool_candidates(db), lambda t: cached_features(db, t),
         minutes=swim * cfg.buffer_factor, seed=a.seed, rec_ratio=cfg.rec_ratio, min_energy=a.min_energy or cfg.min_energy,
@@ -213,8 +241,9 @@ def cmd_on_connect(a) -> None:
     def pool_sync():
         if not (cfg.lastfm_user or cfg.ytm_playlist):
             return "skipped (no lastfm_user / ytm_playlist configured)"
-        rep = run_sync(cfg, db)
-        return f"+{len(rep.added)} -{len(rep.retired)}, {len(rep.missing)} wanted but missing"
+        rep = run_sync(cfg, db, download=cfg.auto_download and bool(cfg.ytm_playlist))
+        left = len(rep.playlist_missing)
+        return f"+{len(rep.pool.added)} -{len(rep.pool.retired)}, {left} playlist tracks still missing"
 
     for line in flow.on_connect(cfg, db, notify=notify, podcast_sync=sync, pool_sync=pool_sync):
         print(line)
@@ -278,6 +307,8 @@ def main(argv=None) -> None:
 
     sy = sub.add_parser("sync", help="refresh the swim pool from playlist + Last.fm taste")
     sy.add_argument("--size", type=int, default=150)
+    sy.add_argument("--download", action="store_true", help="download playlist tracks missing locally (asks first)")
+    sy.add_argument("--yes", action="store_true", help="with --download: do not ask")
     sy.add_argument("--fetch-missing", type=int, default=0, metavar="N",
                     help="offer to download up to N wanted-but-missing tracks")
     sy.set_defaults(func=cmd_sync)

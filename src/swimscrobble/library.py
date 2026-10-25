@@ -47,13 +47,24 @@ def read_track(path: Path) -> Track | None:
     )
 
 
-def scan(folder: Path) -> list[Track]:
+def scan(
+    folder: Path, recursive: bool = True, exclude: tuple[str, ...] = (), min_seconds: float = 60
+) -> list[Track]:
+    """Read every audio file under `folder`. Skips hidden files, AppleDouble sidecars, excluded
+    top-level dirs and anything shorter than `min_seconds` (loops, samples, jingles)."""
+    skip = {e.casefold() for e in exclude}
     tracks = []
-    for p in sorted(folder.iterdir()):
-        # skip macOS AppleDouble sidecars (._foo.mp3)
-        if p.name.startswith(".") or p.suffix.lower() not in AUDIO_EXTS:
+    paths = folder.rglob("*") if recursive else folder.iterdir()
+    for p in sorted(paths):
+        rel = p.relative_to(folder)
+        if any(part.startswith(".") for part in rel.parts) or rel.parts[0].casefold() in skip:
             continue
-        track = read_track(p)
-        if track:
+        if not p.is_file() or p.suffix.lower() not in AUDIO_EXTS:
+            continue
+        try:
+            track = read_track(p)
+        except Exception:  # unreadable/corrupt file: ignore, do not abort the whole scan
+            continue
+        if track and track.duration >= min_seconds:
             tracks.append(track)
     return tracks

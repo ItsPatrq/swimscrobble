@@ -89,7 +89,9 @@ def test_seed_reproducible_and_recent_excluded():
 
 def test_slack_filled_when_too_few_recs():
     lib = [T(i) for i in range(30)]
-    cands = [Candidate("Artist0", "Song0", 1.0, {"similar"})]
+    cands = [Candidate("Artist0", "Song0", 1.0, {"similar"})] + [
+        Candidate(f"Artist{i}", f"Song{i}", 1.0, {"top"}) for i in range(1, 30)
+    ]
     plan = build_mix(lib, cands, feats({}), minutes=60, seed=1, rec_ratio=0.5)
     assert sum(p.track.duration for p in plan) >= 3400  # not stuck at 50% budget
 
@@ -150,3 +152,12 @@ def test_buffer_filled_from_recent_when_pool_small():
     assert sum(p.track.duration for p in plan) == 4000  # fresh 2000s + recent topped up to the whole library
     fresh = [p for p in plan if (p.track.artist.casefold(), p.track.title.casefold()) not in recent]
     assert len(fresh) == 10  # every fresh track is used before any recent one repeats
+
+
+def test_with_taste_pool_unlisted_tracks_are_not_eligible():
+    lib = [T(i) for i in range(30)]
+    cands = [Candidate(f"Artist{i}", f"Song{i}", 1.0, {"top"}) for i in range(10)]
+    analysed = []
+    plan = build_mix(lib, cands, lambda t: (analysed.append(t) or Features(120, -7, 150, 0.6, 0.8)), minutes=600, seed=1)
+    assert {p.track.title for p in plan} == {f"Song{i}" for i in range(10)}
+    assert len(analysed) == 10  # no audio analysis wasted on tracks that can never be picked

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 
@@ -13,7 +13,20 @@ def config_dir() -> Path:
 
 @dataclass
 class Config:
-    music_dir: str = "~/Music/swim"
+    music_dir: str = "~/Music"  # whole tree is scanned
+    exclude_dirs: list[str] = field(default_factory=lambda: ["Logic", "Audio Music Apps"])
+    min_track_seconds: float = 60
+    cookies_file: str = "~/music.youtube.com_cookies.txt"
+    auto_download: bool = True  # on-connect: fetch playlist tracks missing locally
+    download_dir: str = "~/Music/YouTubeMusic"
+    # {url} and {items} are filled in; this is the `ymp3` alias spelled out
+    download_command: list[str] = field(default_factory=lambda: [
+        "yt-dlp", "--cookies", "{cookies}",
+        "--extractor-args", "youtube:player_client=web_music+BGUTIL__1,web_creator+BGUTIL__1",
+        "--format", "bestaudio", "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0",
+        "--embed-metadata", "--embed-thumbnail", "--parse-metadata", "playlist_index:%(track_number)s",
+        "--output", "{download_dir}/%(album|Unknown Album)s/%(track_number)02d - %(title)s.%(ext)s",
+    ])
     device_name: str = "SWIM PRO"
     device_music_subdir: str = "Music"
     device_podcast_subdir: str = "PocketCast"
@@ -33,6 +46,11 @@ class Config:
     stage_subdir: str = ""  # under the device music folder; "" = its root
     lastfm_user: str = ""
     no_repeat_days: int = 7
+
+    @property
+    def cookies_path(self) -> str | None:
+        p = Path(self.cookies_file).expanduser()
+        return str(p) if p.exists() else None
 
     @property
     def music_path(self) -> Path:

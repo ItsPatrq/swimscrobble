@@ -35,7 +35,11 @@ Requires Python 3.11+, `yt-dlp` and `ffmpeg` for playlist/download features.
 ## Config (`~/.config/swimscrobble/config.toml`)
 
 ```toml
-music_dir = "~/Music/swim"
+music_dir = "~/Music"          # the whole tree is scanned (recursively)
+exclude_dirs = ["Logic", "Audio Music Apps"]
+auto_download = true          # on-connect: download playlist tracks missing from music_dir
+cookies_file = "~/music.youtube.com_cookies.txt"
+download_dir = "~/Music/YouTubeMusic"
 device_name = "SWIM PRO"
 minutes = 60                 # how long you swim
 buffer_factor = 2.0          # staged playlist = minutes x this, so it never runs dry
@@ -61,8 +65,8 @@ no_repeat_days = 7
 | `scrobble session.json --start ISO [--played-minutes N] [--skip 3,7] [--confirm] [--submit]` | CSV by default; `--submit` sends to Last.fm |
 | `scrobble-pending` | scrobble the last staged session (start inferred from now) |
 | `lastfm-auth` | one-time Last.fm authorisation (`LASTFM_API_KEY`/`LASTFM_API_SECRET`) |
-| `playlist [url] [--download]` | match a YouTube Music playlist to local files; offer to fetch missing ones |
-| `sync [--fetch-missing N]` | refresh the swim pool from the playlist + 30-day Last.fm top/loved/similar; optionally offer to download N wanted tracks you don't have yet |
+| `playlist [url] [--download]` | list which playlist tracks exist under `music_dir`; `--download` fetches the missing ones |
+| `sync [--download [--yes]] [--fetch-missing N]` | refresh the swim pool from the playlist + 30-day Last.fm top/loved/similar; optionally offer to download N wanted tracks you don't have yet |
 | `podcasts` | mirror Pocket Casts Up Next (`POCKETCASTS_EMAIL`/`POCKETCASTS_PASSWORD`) |
 | `on-connect` | the automatic flow (settle previous session, podcasts, plan + stage next) |
 | `agent install` | launchd agent that runs `on-connect` when volumes change |
@@ -79,6 +83,18 @@ no_repeat_days = 7
 - failed submissions keep the session pending, nothing is lost or double-sent.
 
 macOS may ask for permission to access removable volumes for the agent's Python.
+
+## Library and downloads
+
+`music_dir` (default `~/Music`) is scanned recursively on every `sync` / `on-connect`. Files under
+`exclude_dirs`, hidden files and anything under 60 s are ignored. The playlist and your Last.fm tracks
+are matched to those files by title and artist (tolerant of `(Remastered)`, `[MIXED]`, accents and
+`A, B` credits), and the swim pool only ever contains files you actually have.
+
+Playlist tracks with no matching file are downloaded with the same command as your `ymp3` alias
+(`download_command` in the config, run through `yt-dlp` with your cookies), limited to just the missing
+positions via `--playlist-items`, so nothing already in your library is downloaded again. New files land
+in `download_dir` and are picked up on the next scan.
 
 ## Caveats
 

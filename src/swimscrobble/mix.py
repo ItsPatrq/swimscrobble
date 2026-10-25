@@ -17,7 +17,7 @@ from .generator import Candidate, Key
 from .library import Track
 from .planner import PlannedTrack, dedupe, key_of
 
-UNKNOWN_TASTE_WEIGHT = 0.1  # library tracks no source mentioned: only filler
+UNKNOWN_TASTE_WEIGHT = 0.1  # only used when there is no taste pool at all
 
 
 @dataclass
@@ -98,10 +98,12 @@ def build_mix(
     stale: list[Item] = []  # recently swum: only used if the fresh pool can't fill the buffer
     for t in dedupe(library):
         k = key_of(t)
+        c = cmap.get(k)
+        if cmap and c is None:
+            continue  # a taste pool exists: only tracks from the playlist / Last.fm are eligible
         f = feature_of(t)
         if f.energy < min_energy:
             continue
-        c = cmap.get(k)
         is_rec = c is not None and c.sources == {"similar"}
         taste = c.score if c else UNKNOWN_TASTE_WEIGHT
         item = Item(t, "rec" if is_rec else "fav", f.energy, taste * f.energy**2 / (1 + plays.get(k, 0)))

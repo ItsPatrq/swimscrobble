@@ -12,9 +12,12 @@ from .ytm import Entry
 MATCH, AMBIGUOUS, MISSING = "matched", "ambiguous", "missing"
 
 
+_FOLD = str.maketrans({"ł": "l", "ø": "o", "đ": "d", "ı": "i", "ß": "ss", "æ": "ae", "œ": "oe"})
+
+
 def norm(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
-    s = "".join(c for c in s if not unicodedata.combining(c)).casefold()
+    s = "".join(c for c in s if not unicodedata.combining(c)).casefold().translate(_FOLD)
     s = re.sub(r"[\[(][^\])]*[\])]", " ", s)  # [MIXED], (feat. x), (Remastered)
     s = re.sub(r"\b(feat|ft)\.?\b.*", " ", s)
     s = re.sub(r"[^\w]+", " ", s)

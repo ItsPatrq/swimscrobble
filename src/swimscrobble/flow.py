@@ -128,7 +128,7 @@ def on_connect(
     db,
     now: datetime | None = None,
     notify: Callable[[str], None] = print,
-    library_loader: Callable[[Path], list[Track]] = scan,
+    library_loader: Callable[[Path], list[Track]] | None = None,
     feature_of: Callable[[Track], Features] | None = None,
     podcast_sync: Callable[[], dict] | None = None,
     pool_sync: Callable[[], str] | None = None,
@@ -136,6 +136,9 @@ def on_connect(
 ) -> list[str]:
     now = now or datetime.now()
     log: list[str] = []
+    library_loader = library_loader or (
+        lambda p: scan(p, exclude=tuple(cfg.exclude_dirs), min_seconds=cfg.min_track_seconds)
+    )
     if not cfg.device_path.is_dir():
         _set_handled(False)  # unplugged: the next connection is a new one
         return ["device not connected"]
