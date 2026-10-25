@@ -29,7 +29,7 @@ def plan_session(
 ) -> list[PlannedTrack]:
     """Shuffle, then greedily take every track that still fits the budget."""
     rng = random.Random(seed)
-    pool = list(tracks)
+    pool = dedupe(tracks)
     rng.shuffle(pool)
     budget = minutes * 60
     chosen: list[Track] = []
@@ -41,6 +41,19 @@ def plan_session(
     if avoid_repeat_artist:
         chosen = _spread_artists(chosen)
     return [PlannedTrack(i + 1, t) for i, t in enumerate(chosen)]
+
+
+def dedupe(tracks: list[Track]) -> list[Track]:
+    """Drop repeats of the same artist+title (e.g. a song copied from two albums)."""
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for t in tracks:
+        key = (t.artist.casefold(), t.title.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
 
 
 def _spread_artists(tracks: list[Track]) -> list[Track]:

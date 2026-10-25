@@ -32,3 +32,10 @@ def test_scrobble_timestamps_sequential():
     plan = plan_session(make(10), minutes=60, seed=1)
     s = build_scrobbles(plan, datetime(2026, 10, 25, 7, 0))
     assert s[1].timestamp - s[0].timestamp == timedelta(seconds=240)
+
+
+def test_duplicates_removed():
+    dup = make(5) + [Track(Path("copy.mp3"), "A0", "T0", "other album", 240)]
+    plan = plan_session(dup, minutes=600, seed=1)
+    keys = [(p.track.artist, p.track.title) for p in plan]
+    assert len(keys) == len(set(keys)) == 5
