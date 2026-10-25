@@ -99,6 +99,10 @@ def cmd_scrobble_pending(a) -> None:
     scrobbles = _scrobbles_from_args(manifest, a)
     if _deliver(scrobbles, a, cfg):
         history.mark_scrobbled(db, row["id"], [(s.artist, s.title, s.timestamp.timestamp()) for s in scrobbles])
+        from . import flow
+
+        flow._set_handled(False)  # lets `on-connect` stage the next session without re-plugging
+        print("settled; run `swimscrobble on-connect` to stage the next session")
 
 
 def cmd_lastfm_auth(a) -> None:
