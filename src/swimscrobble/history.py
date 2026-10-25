@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS pool(
 CREATE TABLE IF NOT EXISTS scrobbles(
   ts INTEGER, artist TEXT, title TEXT, PRIMARY KEY(ts, artist, title));
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS wish_attempts(
+  key TEXT PRIMARY KEY, status TEXT, at REAL);
 CREATE TABLE IF NOT EXISTS podcasts(
   uuid TEXT PRIMARY KEY, title TEXT, filename TEXT, downloaded_at REAL);
 """

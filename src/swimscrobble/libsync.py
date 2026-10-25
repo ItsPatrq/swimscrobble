@@ -30,6 +30,7 @@ def sync_library(
     history_sync: Callable[[], object] | None = None,
     taste_fetch: Callable[[str, list, list], Taste] | None = None,
     download: Callable[[list[Entry]], None] | None = None,
+    fetch_wishes: Callable[[list], int] | None = None,
     library_loader: Callable[[], list[Track]] | None = None,
     now: float | None = None,
 ) -> LibSyncReport:
@@ -54,25 +55,35 @@ def sync_library(
         downloaded = True
 
     key = lambda t: (t.artist.casefold(), t.title.casefold())  # noqa: E731
-    pool = None
-    if cfg.pool == "playlist" and entries:
-        pool = {key(t) for e in entries if (t := idx.find(e.artist, e.title, e.duration))}
 
-    taste = None
-    if cfg.lastfm_user:
-        if history_sync:
-            history_sync()
-        st = lfhistory.stats(db, now)
-        recent = sorted((kv for kv in st.items() if kv[1].p30), key=lambda kv: -kv[1].p30)
-        artists: dict[str, int] = {}
-        for (a, _), s in recent:
-            artists[a] = artists.get(a, 0) + s.p30
-        if taste_fetch:
-            taste = taste_fetch(cfg.lastfm_user, [k for k, _ in recent[:10]],
-                                sorted(artists, key=lambda a: -artists[a]))
-        owned, wanted = assign(taste, st, library, pool, idx)
-    else:
-        owned, wanted = assign(None, {}, library, pool, idx)  # no history: everything is "discovery"
+    def judge():
+        """Pool first (playlist + auto-fetched files), then check each track against the history."""
+        idx = LocalIndex(library)
+        pool = None
+        if cfg.pool == "playlist" and entries:
+            pool = {key(t) for e in entries if (t := idx.find(e.artist, e.title, e.duration))}
+            pool |= {key(t) for t in library if t.path.is_relative_to(cfg.auto_path)}
+        taste = None
+        if cfg.lastfm_user:
+            if history_sync and not synced:
+                history_sync()
+                synced.append(1)
+            st = lfhistory.stats(db, now)
+            recent = sorted((kv for kv in st.items() if kv[1].p30), key=lambda kv: -kv[1].p30)
+            artists: dict[str, int] = {}
+            for (a, _), s in recent:
+                artists[a] = artists.get(a, 0) + s.p30
+            if taste_fetch:
+                taste = taste_fetch(cfg.lastfm_user, [k for k, _ in recent[:10]],
+                                    sorted(artists, key=lambda a: -artists[a]))
+            return assign(taste, st, library, pool, idx)
+        return assign(None, {}, library, pool, idx)  # no history: everything is "discovery"
+
+    synced: list[int] = []
+    owned, wanted = judge()
+    if wanted and fetch_wishes and fetch_wishes(wanted):
+        library = load()  # new files arrived: rescan and judge again
+        owned, wanted = judge()
     rep = poolsync.sync_pool(db, owned, {key(t) for t in library}, history.play_counts(db), size)
     rep.missing.extend(wanted)
     return LibSyncReport(rep, len(entries), missing, downloaded)

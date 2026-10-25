@@ -122,3 +122,89 @@ def test_download_missing_asks_and_reports(tmp_path):
     assert acquire.download_missing(cfg, "u", es, run, ask=lambda _: "n") is False and not ran
     assert acquire.download_missing(cfg, "u", es, run, ask=lambda _: "y") and ran[0][-3:-1] == ["--playlist-items", "4"]
     assert acquire.download_missing(cfg, "u", [], run) is True
+
+
+# --- wishlist: download what you play / Last.fm suggests even if it is not in the playlist ---------
+
+def fake_search(results):
+    return lambda query: results.get(query, [])
+
+
+def song(video_id, artist, title, dur=200):
+    return {"videoId": video_id, "title": title, "artists": [{"name": a} for a in artist.split(", ")], "duration_seconds": dur}
+
+
+def test_find_song_rejects_covers_and_lookalikes():
+    res = [song("c1", "Cover Band", "Closer"), song("l1", "NIN", "Closer (Live)"), song("ok", "Nine Inch Nails", "Closer")]
+    e = acquire.find_song("Nine Inch Nails", "Closer", fake_search({"Nine Inch Nails Closer": res}))
+    assert e.video_id == "ok"
+    assert acquire.find_song("Nine Inch Nails", "Closer", fake_search({"Nine Inch Nails Closer": res[:2]})) is None
+
+
+def wish(artist, title, score=1.0):
+    from swimscrobble.generator import Candidate
+    return Candidate(artist, title, score, {"rec"})
+
+
+def test_fetch_wishes_downloads_with_watch_url_and_auto_dir_and_remembers(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    cfg = Config(auto_dir=str(tmp_path / "auto"))
+    ran = []
+
+    class R:
+        returncode = 0
+
+    run = lambda cmd: (ran.append(cmd) or R())  # noqa: E731
+    search = fake_search({"A One": [song("v1", "A", "One")], "B Two": []})
+    wishes = [wish("A", "One"), wish("B", "Two"), wish("C", "Three")]
+    n = acquire.fetch_wishes(cfg, db, wishes, 2, search, run, now=1000)
+    assert n == 1 and len(ran) == 1  # only "One" resolved; limit 2 stopped before "Three"
+    assert ran[0][-1] == "https://music.youtube.com/watch?v=v1"
+    assert str(tmp_path / "auto") in ran[0][ran[0].index("--output") + 1]
+    # next sync: "One" done for good, "Two" (not found) waits 30 days, "Three" is next in line
+    n = acquire.fetch_wishes(cfg, db, wishes, 5, fake_search({"C Three": [song("v3", "C", "Three")]}), run, now=2000)
+    assert n == 1 and ran[1][-1].endswith("v3") and len(ran) == 2
+    assert acquire.fetch_wishes(cfg, db, wishes, 5, search, run, now=2000 + 31 * 86400) == 0  # "Two" retried, still absent
+
+
+def test_fetch_wishes_respects_ask_and_failures(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    cfg = Config(auto_dir=str(tmp_path / "auto"))
+    search = fake_search({"A One": [song("v1", "A", "One")]})
+
+    class Bad:
+        returncode = 1
+
+    ran = []
+    assert acquire.fetch_wishes(cfg, db, [wish("A", "One")], 5, search, lambda c: ran.append(c), ask=lambda _: "n") == 0
+    assert ran == []
+    assert acquire.fetch_wishes(cfg, db, [wish("A", "One")], 5, search, lambda c: Bad(), now=1) == 0
+    assert db.execute("SELECT status FROM wish_attempts").fetchone()["status"] == "failed"
+
+
+def test_sync_fetches_wishes_and_pool_includes_auto_dir_without_touching_playlist(tmp_path):
+    from swimscrobble.taste import Taste
+
+    db = history.connect(tmp_path / "h.db")
+    db.executemany("INSERT INTO scrobbles VALUES(?,?,?)", [(int(NOW) - 86400 * d, "Loved Band", "Big Hit") for d in (1, 2, 3)])
+    db.commit()
+    cfg = make_cfg(tmp_path)
+    cfg.auto_dir = str(tmp_path / "auto")
+    cfg.ytm_playlist = "https://music.youtube.com/playlist?list=P"
+    (tmp_path / "auto").mkdir()
+    playlist_track = T("Closterkeller", "Sansara", name=str(tmp_path / "pl.mp3"))
+    lib = [playlist_track]
+    entries = [Entry("1", "Closterkeller", "Sansara", 200, 1)]
+    fetched = []
+
+    def fetch(wishes):
+        fetched.append([w.title for w in wishes])
+        lib.append(T("Loved Band", "Big Hit", name=str(tmp_path / "auto" / "Loved Band - Big Hit.mp3")))
+        return 1
+
+    rep = sync_library(cfg, db, fetch_playlist=lambda u: entries, taste_fetch=lambda *a: Taste(),
+                       library_loader=lambda: list(lib), fetch_wishes=fetch, now=NOW)
+    assert fetched == [["Big Hit"]]  # played last month on Last.fm, no file, not in the playlist -> fetched
+    pool = {(r["artist"], r["title"]): r["source"] for r in db.execute("SELECT artist, title, source FROM pool")}
+    assert pool[("loved band", "big hit")] == "obsession" and ("closterkeller", "sansara") in pool
+    assert rep.pool.missing == []  # nothing left on the wishlist after the fetch

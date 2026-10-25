@@ -19,6 +19,8 @@ class Config:
     cookies_file: str = "~/music.youtube.com_cookies.txt"
     auto_download: bool = True  # on-connect: fetch playlist tracks missing locally
     download_dir: str = "~/Music/YouTubeMusic"
+    auto_fetch: int = 20  # wishlist tracks downloaded per sync (0 = off), even if not in your playlist
+    auto_dir: str = "~/Music/swim-auto"  # where those land; always eligible for the pool
     # {url} and {items} are filled in; this is the `ymp3` alias spelled out
     download_command: list[str] = field(default_factory=lambda: [
         "yt-dlp", "--cookies", "{cookies}",
@@ -58,6 +60,10 @@ class Config:
     @property
     def playlists(self) -> list[str]:
         return list(dict.fromkeys([u for u in [self.ytm_playlist, *self.ytm_playlists] if u]))
+
+    @property
+    def auto_path(self) -> Path:
+        return Path(self.auto_dir).expanduser()
 
     @property
     def cookies_path(self) -> str | None:

@@ -29,9 +29,13 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
    - *Order*: a randomised walk that avoids big energy jumps, back-to-back artists and long runs of
      one bucket. Tracks you swam to in the last `no_repeat_days` are skipped, and heavily swum ones
      fade out.
-   - *Wishlist*: `sync` lists tracks you play a lot (or Last.fm suggests) but have no file for, with
-     YouTube Music search links in `~/.config/swimscrobble/wishlist.txt`. Add the ones you want to your
-     playlist; the next sync downloads them.
+   - *Wishlist, no playlist upkeep needed*: tracks you play a lot (or Last.fm suggests) but have no
+     file for are looked up on YouTube Music (songs only; the title and artist must both match, so no
+     covers or live versions) and downloaded, up to `auto_fetch` (default 20) per sync, into
+     `auto_dir` (`~/Music/swim-auto`). Those files are always eligible, even if they are not in your
+     playlist. Misses are remembered and retried after 30 days. The list with search links is also
+     written to `~/.config/swimscrobble/wishlist.txt`. Adding tracks to your playlist still works too
+     and gives you control over what is in the pool.
 2. **Swim.**
 3. **Scrobble**: the staged list (`playlist_minutes`, default 120) is longer than the swim
    (`minutes`, default 60) so it can't run out. Only the first `minutes` of it counts as heard: next time you plug in, those tracks are
@@ -53,7 +57,9 @@ Requires Python 3.11+, `yt-dlp` and `ffmpeg` for playlist/download features.
 ```toml
 music_dir = "~/Music"          # the whole tree is scanned (recursively)
 exclude_dirs = ["Logic", "Audio Music Apps"]
-auto_download = true          # on-connect: download playlist tracks missing from music_dir
+auto_download = true          # on-connect: download playlist tracks missing from music_dir + wishlist tracks
+auto_fetch = 20               # wishlist tracks per sync (0 = off)
+auto_dir = "~/Music/swim-auto"
 cookies_file = "~/music.youtube.com_cookies.txt"
 download_dir = "~/Music/YouTubeMusic"
 device_name = "SWIM PRO"

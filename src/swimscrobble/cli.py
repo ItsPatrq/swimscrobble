@@ -158,6 +158,8 @@ def run_sync(cfg, db, size: int = 1000, download: str | bool = False):
         history_sync=lambda: print(f"Last.fm history: +{lfhistory.sync_history(db, cfg.lastfm_user)} scrobbles"),
         taste_fetch=lambda user, tracks, artists: taste.fetch_taste(user, tracks, artists),
         download=dl if download else None,
+        fetch_wishes=(lambda w: acquire.fetch_wishes(cfg, db, w, cfg.auto_fetch, ask=input if download == "ask" else None))
+        if (download and cfg.auto_fetch) else None,
     )
 
 

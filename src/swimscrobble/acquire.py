@@ -42,13 +42,17 @@ def resolve(artist: str, title: str, fetch: Callable = None) -> Entry | None:
     return hits[0] if hits else None
 
 
-def playlist_download_command(cfg, url: str, items: list[int] | None = None) -> list[str]:
+def playlist_download_command(
+    cfg, url: str, items: list[int] | None = None, output: str | None = None
+) -> list[str]:
     """The user's `ymp3` command, optionally limited to playlist positions (--playlist-items)."""
     subs = {
         "cookies": str(Path(cfg.cookies_file).expanduser()),
         "download_dir": str(Path(cfg.download_dir).expanduser()),
     }
     cmd = [part.format(**subs) for part in cfg.download_command]
+    if output and "--output" in cmd:
+        cmd[cmd.index("--output") + 1] = output
     if items:
         cmd += ["--playlist-items", ",".join(str(i) for i in sorted(items))]
     return [*cmd, url]
@@ -63,3 +67,70 @@ def download_missing(
     if ask and ask(f"Download {len(missing)} missing tracks into {cfg.download_dir}? [y/N] ").strip().lower() != "y":
         return False
     return run(playlist_download_command(cfg, url, [e.index for e in missing if e.index])).returncode == 0
+
+
+# --- wishlist: tracks you play / Last.fm suggests but have no file for ---------------------------
+
+RETRY_AFTER = 30 * 86400
+
+
+def yt_search(query: str, limit: int = 10) -> list[dict]:
+    from ytmusicapi import YTMusic  # unauthenticated song search; imported lazily
+
+    return YTMusic().search(query, filter="songs", limit=limit)
+
+
+def find_song(artist: str, title: str, search: Callable[[str], list[dict]] = yt_search) -> Entry | None:
+    """First YouTube Music *song* whose title and artist both match (so no covers, lives or lookalikes)."""
+    from .link import _artist_ok
+    from .matcher import norm
+
+    for r in search(f"{artist} {title}"):
+        names = ", ".join(a["name"] for a in r.get("artists") or [])
+        if norm(r.get("title", "")) == norm(title) and _artist_ok(artist, names):
+            return Entry(r["videoId"], names, r["title"], r.get("duration_seconds"))
+    return None
+
+
+def fetch_wishes(
+    cfg,
+    db,
+    wishes: list,
+    limit: int,
+    search: Callable[[str], list[dict]] = yt_search,
+    run: Callable = subprocess.run,
+    ask: Callable[[str], str] | None = None,
+    now: float | None = None,
+) -> int:
+    """Download up to `limit` wishlist tracks into cfg.auto_dir. Remembers outcomes so nothing
+    that was not found (or already fetched) is retried on every sync. Returns the number fetched."""
+    import time
+
+    from .matcher import norm
+
+    now = now if now is not None else time.time()
+    todo = []
+    for w in wishes:
+        key = f"{norm(w.artist)}|{norm(w.title)}"
+        row = db.execute("SELECT status, at FROM wish_attempts WHERE key=?", (key,)).fetchone()
+        if row and (row["status"] == "ok" or now - row["at"] < RETRY_AFTER):
+            continue
+        todo.append((key, w))
+        if len(todo) >= limit:
+            break
+    if not todo:
+        return 0
+    if ask and ask(f"Download {len(todo)} wishlist tracks into {cfg.auto_dir}? [y/N] ").strip().lower() != "y":
+        return 0
+    out = str(cfg.auto_path / "%(artist,channel)s - %(title)s.%(ext)s")
+    fetched = 0
+    for key, w in todo:
+        entry = find_song(w.artist, w.title, search)
+        status = "notfound"
+        if entry:
+            cmd = playlist_download_command(cfg, f"https://music.youtube.com/watch?v={entry.video_id}", output=out)
+            status = "ok" if run(cmd).returncode == 0 else "failed"
+        db.execute("INSERT OR REPLACE INTO wish_attempts(key, status, at) VALUES(?,?,?)", (key, status, now))
+        db.commit()
+        fetched += status == "ok"
+    return fetched
