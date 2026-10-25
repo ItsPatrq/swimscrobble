@@ -52,7 +52,17 @@ def cmd_scrobble(args) -> None:
         for t in manifest["tracks"]
     ]
     start = datetime.fromisoformat(args.start)
-    csv_text = to_csv(build_scrobbles(plan, start))
+    scrobbles = build_scrobbles(plan, start)
+    if args.submit:
+        from . import lastfm
+
+        stale = lastfm.check_window(scrobbles)
+        if stale:
+            raise SystemExit(f"{len(stale)} scrobbles outside Last.fm's 14-day window; fix --start")
+        n = lastfm.submit(scrobbles, lastfm.load_session_key())
+        print(f"Last.fm accepted {n}/{len(scrobbles)}")
+        return
+    csv_text = to_csv(scrobbles)
     if args.out:
         Path(args.out).write_text(csv_text)
         print(f"wrote {args.out}")
@@ -76,7 +86,11 @@ def main() -> None:
     s.add_argument("manifest")
     s.add_argument("--start", required=True, help="session start, ISO e.g. 2026-10-25T07:30")
     s.add_argument("--out")
+    s.add_argument("--submit", action="store_true", help="send to Last.fm (default: print CSV only)")
     s.set_defaults(func=cmd_scrobble)
+
+    a = sub.add_parser("lastfm-auth", help="authorise swimscrobble on Last.fm")
+    a.set_defaults(func=lambda _args: (__import__("swimscrobble.lastfm", fromlist=["x"]).authenticate(), print("saved session")))
 
     args = ap.parse_args()
     args.func(args)

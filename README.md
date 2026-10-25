@@ -12,8 +12,18 @@ was planned.
    `001 - `, `002 - ` ... prefixes. The headphones play alphabetically, so filename order is
    play order. A `session.json` manifest records the plan.
 2. Swim.
-3. `swimscrobble scrobble session.json --start 2026-10-25T07:30` emits timestamped scrobble
-   records (CSV today; direct Last.fm / ListenBrainz submission is planned).
+3. `swimscrobble scrobble session.json --start 2026-10-25T07:30` prints a CSV of timestamped
+   scrobbles. Add `--submit` to send them to Last.fm.
+
+### Last.fm setup
+
+Create an API account at https://www.last.fm/api/account/create, then:
+
+```
+export LASTFM_API_KEY=...  LASTFM_API_SECRET=...
+swimscrobble lastfm-auth      # one-time browser approval; key stored in ~/.config/swimscrobble/lastfm.json
+swimscrobble scrobble session.json --start 2026-10-25T07:30 --submit
+```
 
 ## Status
 
