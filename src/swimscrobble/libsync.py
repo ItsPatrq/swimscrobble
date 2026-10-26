@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from . import affinity, history, poolsync
 from .acquire import fetched_wishes
+from .blocklist import Blocklist
 from .buckets import assign
 from .config import Config
 from .library import Track, scan_config
@@ -76,7 +77,10 @@ def sync_library(
             pool = {key(t) for e in entries if (t := idx.find(e.artist, e.title, e.duration))}
             # tracks fetched from the wishlist belong to the pool too, whether or not they are in a playlist
             pool |= {key(t) for a, ti in fetched_wishes(db) if (t := idx.find(a, ti))}
-        return assign(taste, tracks, artists, library, pool, idx, when)
+        owned, wanted = assign(taste, tracks, artists, library, pool, idx, when)
+        return blocked.keep(owned), blocked.keep(wanted)  # never pooled, never wished for, never downloaded
+
+    blocked = Blocklist.load(db)
 
     owned, wanted = judge()
     if wanted and fetch_wishes and fetch_wishes(wanted):

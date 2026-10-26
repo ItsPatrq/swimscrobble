@@ -5,7 +5,8 @@ Widgets take `read_key` so tests can feed a scripted key sequence.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from rich.console import Console, Group
@@ -20,6 +21,36 @@ class Item:
     key: str  # shortcut letter ("" = none) and the value returned
     label: str
     hint: str = ""
+
+
+class Busy:
+    """A spinner with a status line for slow work. `update` may be called from anywhere (worker threads too) and is
+    a no-op while nothing is running, so it can be handed to code that also runs headless (the launchd agent)."""
+
+    def __init__(self, console: Console):
+        self.console = console
+        self._status = None
+
+    @contextmanager
+    def __call__(self, message: str) -> Iterator[None]:
+        if self._status is not None:  # nested: the outer spinner shows the inner step
+            self.update(message)
+            yield
+            return
+        if not self.console.is_terminal:  # pipes and tests: no animation, just say what is happening
+            self.console.print(f"[dim]{message} ...[/]")
+            yield
+            return
+        with self.console.status(message, spinner="dots") as status:
+            self._status = status
+            try:
+                yield
+            finally:
+                self._status = None
+
+    def update(self, message: str) -> None:
+        if self._status is not None:
+            self._status.update(message)
 
 
 class KeyUI:

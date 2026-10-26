@@ -362,7 +362,7 @@ def test_scrobble_screen_offers_the_garmin_swim(env):
     shell, fake, out = make(env, "c", "", "", "y", "n", "q")  # accept the Garmin length, no skips, send
     shell.act.find_swim = lambda since, until: Swim(datetime(2026, 10, 25, 8, 0), 20.0, "lap_swimming")
     shell.run()
-    assert "Garmin: lap swimming" in text(out) and fake.calls[-1] == ("submit", 4)  # 20 min of 5-min tracks
+    assert "Garmin: lap swimming" in text(out) and fake.calls[-1] == ("submit", 7)  # 7 warm-up + 20 swum + 8 after, of 5-min tracks
 
 
 def test_podcast_screen_marks_finished_episodes_then_syncs(env):
@@ -386,3 +386,29 @@ def test_liked_discoveries_are_loved(env):
     heard = [PlannedTrack(1, lib[0], "obsession"), PlannedTrack(2, lib[1], "rec"), PlannedTrack(3, lib[2], "fresh")]
     shell.discoveries(heard)
     assert loved == [(lib[2].artist, lib[2].title)] and "loved 1" in text(out)  # #2 of the two new ones
+
+
+def test_block_from_the_playlist_removes_it_and_keeps_the_artist_out_of_rerolls(env):
+    cfg, db, *_ = env
+    stage(env)
+    _, m = make(env)[0].session()
+    victim = sorted(m["tracks"], key=lambda t: t["position"])[0]
+    shell, _, out = make(env, "p", "b 1", "2", "", "q")
+    shell.run()
+    assert f"blocked {victim['artist']} (all tracks)" in text(out)
+    _, m = shell.session()
+    assert victim["artist"] not in {t["artist"] for t in m["tracks"]}
+    m = flow.reroll(cfg, db, seed=3, library_loader=lambda _: env[2], feature_of=lambda t: Features(120, -7, 150, 0.6, 0.8))
+    assert victim["artist"] not in {t["artist"] for t in m["tracks"]}
+
+
+def test_blocklist_screen_unblocks_and_blocks(env):
+    from swimscrobble import blocklist
+
+    cfg, db, *_ = env
+    blocklist.block(db, "Artist1")
+    blocklist.block(db, "Artist2", "Song2")
+    shell, _, out = make(env, "b", "1", "The Weeknd", "q")
+    shell.run()
+    assert blocklist.entries(db) == [("Artist2", "Song2"), ("The Weeknd", "")]
+    assert "unblocked Artist1 (all tracks)" in text(out)

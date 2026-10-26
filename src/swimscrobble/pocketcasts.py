@@ -4,6 +4,7 @@ Pocket Casts does not support third-party clients; use your own account at your 
 """
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import shutil
@@ -23,6 +24,11 @@ TOKEN_FILE = "pocketcasts.json"
 
 Transport = Callable[[str, dict, str | None], dict]  # (path, body, token) -> json
 Downloader = Callable[[str, Path], None]
+Progress = Callable[[str], None]
+
+
+def _quiet(_message: str) -> None:
+    pass
 
 
 def http_post(path: str, body: dict, token: str | None) -> dict:
@@ -117,11 +123,12 @@ class Fetcher:
         return cls(fetch, ".mp3", f"{speed:.2f}x" + ("+trim" if trim_silence else ""))
 
 
-def sync_latest(dest: Path, db, limit: int = 10, token: str | None = None,
-                speed: float = 1.0, trim_silence: bool = False, reserve_mb: float = 0) -> PodcastReport:
+def sync_latest(dest: Path, db, limit: int = 10, token: str | None = None, speed: float = 1.0,
+                trim_silence: bool = False, reserve_mb: float = 0, progress: Progress = _quiet) -> PodcastReport:
     token = token or saved_token() or login()
+    progress("podcasts: checking subscriptions")
     return sync_queue(latest_unplayed(token, limit), dest, db, limit, Fetcher.for_settings(speed, trim_silence),
-                      reserve_mb=reserve_mb)
+                      reserve_mb=reserve_mb, progress=progress)
 
 
 def on_device(db) -> list[dict]:
@@ -159,6 +166,7 @@ def sync_queue(
     fetcher: Fetcher | Downloader = Fetcher(),
     reserve_mb: float = 0,
     workers: int = 3,
+    progress: Progress = _quiet,
 ) -> PodcastReport:
     """Make `dest` hold the first N episodes, ordered by filename prefix.
 
@@ -196,6 +204,8 @@ def sync_queue(
         todo.append((uuid, name, ep))
 
     with tempfile.TemporaryDirectory(prefix="swimscrobble-podcasts-") as tmp:
+        done = itertools.count(1)  # next() on a count is atomic in CPython: safe across the pool's threads
+
         def fetch(item):
             _, name, ep = item
             try:
@@ -203,12 +213,17 @@ def sync_queue(
                 return None
             except Exception as e:  # one bad host must not cost the other episodes
                 return e
+            finally:
+                progress(f"podcasts: fetched {next(done)}/{len(todo)}")
+        if todo:
+            progress(f"podcasts: fetching 0/{len(todo)}")
         with ThreadPoolExecutor(max_workers=workers) as pool:  # network + ffmpeg bound, independent
             errors = list(pool.map(fetch, todo))
-        for (uuid, name, ep), err in zip(todo, errors):
+        for i, ((uuid, name, ep), err) in enumerate(zip(todo, errors), 1):
             if err:
                 report.failed.append(f"{name}: {err}")
                 continue
+            progress(f"podcasts: copying to the headphones {i}/{len(todo)}")
             shutil.copyfile(Path(tmp) / name, dest / name)
             report.downloaded.append(name)
 

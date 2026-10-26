@@ -25,6 +25,7 @@ DEFAULT_QUOTAS = {"obsession": 0.40, "mid": 0.15, "fresh": 0.15, "lost": 0.10, "
 BUCKET_ALIASES = {"playlist": "obsession", "top": "obsession", "loved": "obsession", "similar": "rec"}
 UNKNOWN_TASTE_WEIGHT = 0.5  # only used when there is no taste pool at all
 SKIP_DAMP, ARTIST_SKIP_DAMP = 0.5, 0.85  # quality factor per skip of the track / of any track by the artist
+POWER_PULL, POWER_RANGE = 3.0, (0.75, 1.3)  # +5% swim speed to a track -> x1.15 quality, capped both ways
 RETIRE_SKIPS = 3
 ARTIST_WEIGHT = 1.0  # strength of the same-artist term in the similarity kernel (audio terms total 1.0)
 
@@ -71,12 +72,14 @@ def build_mix(
     workout: str = "steady",
     skips: dict[Key, int] | None = None,
     artist_skips: dict[str, int] | None = None,
+    power: dict[Key, float] | None = None,
 ) -> list[PlannedTrack]:
     """`skips` / `artist_skips`: how often you skipped a track / an artist on a swim. Each skip makes it rarer;
-    a track skipped RETIRE_SKIPS times is not picked again."""
+    a track skipped RETIRE_SKIPS times is not picked again. `power`: how much faster you swim to a track
+    (power.scores, from Garmin lengths); faster tracks are picked more often, slower ones less."""
     rng = np.random.default_rng(seed)
     plays, recent = plays or {}, recent or set()
-    skips, artist_skips = skips or {}, artist_skips or {}
+    skips, artist_skips, power = skips or {}, artist_skips or {}, power or {}
     cmap = {(c.artist.casefold(), c.title.casefold()): c for c in candidates}
     quotas = dict(quotas or DEFAULT_QUOTAS)
 
@@ -120,7 +123,9 @@ def build_mix(
         swum = np.array([plays.get(key_of(t), 0) for t in tracks])
         skipped = np.array([SKIP_DAMP ** skips.get(key_of(t), 0) * ARTIST_SKIP_DAMP ** artist_skips.get(t.artist.casefold(), 0)
                             for t in tracks])
-        q = np.clip(rel, 0.1, 1.5) ** 0.8 * energy ** WORKOUTS[workout].energy_pull / np.sqrt(1 + swum) * skipped
+        faster = np.clip([1 + POWER_PULL * power.get(key_of(t), 0.0) for t in tracks], *POWER_RANGE)
+        q = (np.clip(rel, 0.1, 1.5) ** 0.8 * energy ** WORKOUTS[workout].energy_pull / np.sqrt(1 + swum) * skipped
+             * faster)
         return tracks, feats, audio, artist_ids, q, energy, buckets
 
     budget = minutes * 60

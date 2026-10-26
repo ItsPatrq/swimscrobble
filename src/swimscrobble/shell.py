@@ -17,18 +17,19 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from . import editing, flow, history, stats
+from . import blocklist, editing, flow, history, stats
 from .config import Config
 from .library import Track
 from .link import LocalIndex
 from .matcher import norm
 from .planner import NEW_TO_YOU, fmt_min, parse_positions
 from .workouts import WORKOUTS
-from .ui import Item, KeyUI
+from .ui import Busy, Item, KeyUI
 
 COLORS = {"obsession": "magenta", "mid": "cyan", "lost": "yellow", "fresh": "green", "rec": "bright_blue", "added": "white"}
 HELP = """\
-[bold]p[/] playlist      view the staged playlist (and edit it: d 3,5 delete · m 7 2 move · a add)
+[bold]p[/] playlist      view the staged playlist (and edit it: d 3,5 delete · m 7 2 move · a add · b 4 block)
+[bold]b[/] blocklist     artists and tracks you never want to hear (block, unblock)
 [bold]r[/] reroll        replace the staged playlist with a new one
 [bold]a[/] add track     search your library (or YouTube Music) and put a track into the playlist
 [bold]s[/] stats         listening, pool and swim statistics
@@ -63,14 +64,16 @@ class Actions:
     podcast_episodes: Callable[[], list[dict]] = list  # what the last podcast sync put on the headphones
     mark_played: Callable[[list[dict]], str] = lambda eps: ""  # tell Pocket Casts, then sync again
     love: Callable[[list[tuple[str, str]]], str] = lambda tracks: ""  # Last.fm love (+ your playlist if authorised)
+    garmin_sync: Callable[[], str] | None = None  # time the scrobbled swim's tracks, write its soundtrack
 
 
 class Shell:
     def __init__(self, cfg: Config, db, actions: Actions, console: Console | None = None,
-                 ask: Callable[[str], str] = input, keys: KeyUI | None = None):
+                 ask: Callable[[str], str] = input, keys: KeyUI | None = None, busy: Busy | None = None):
         self.cfg, self.db, self.act = cfg, db, actions
         self.keys = keys  # arrow-key widgets; None = plain line input (pipes, tests)
         self.console = console or Console(highlight=False)
+        self.busy = busy or Busy(self.console)  # spinner around every slow call; real_actions report into it
         self._ask = ask
         self._library: list[Track] | None = None
 
@@ -96,7 +99,8 @@ class Shell:
 
     def library(self, refresh: bool = False) -> list[Track]:
         if self._library is None or refresh:
-            self._library = self.act.load_library()
+            with self.busy("scanning the library"):
+                self._library = self.act.load_library()
         return self._library
 
     def session(self):
@@ -167,7 +171,7 @@ class Shell:
                               f"[{COLORS.get(b, 'white')}]{b}[/]", f"{tr['artist']} - {tr['title']}")
                 t += tr["duration"]
             self.say(table)
-            cmd = self.ask("[playlist] d 3,5 delete · m 7 2 move · a add · r reroll · Enter back >").split()
+            cmd = self.ask("[playlist] d 3,5 delete · m 7 2 move · a add · b 4 block · r reroll · Enter back >").split()
             if not cmd:
                 return
             try:
@@ -178,12 +182,18 @@ class Shell:
                 elif cmd[0] == "m" and len(cmd) == 3:
                     editing.move_track(self.cfg, self.db, int(cmd[1]), int(cmd[2]))
                     self.say("[green]moved[/]")
+                elif cmd[0] == "b" and len(cmd) == 2:
+                    self.block_track(int(cmd[1]), tracks[int(cmd[1]) - 1])
                 elif cmd[0] == "a":
                     self.add_track()
                 elif cmd[0] == "r":
                     self.reroll()
                 else:
                     self.say("[yellow]unknown command[/]")
+            except _Cancel:
+                pass
+            except IndexError:
+                self.say("[yellow]no track at that position[/]")
             except (ValueError, RuntimeError) as e:
                 self.say(f"[red]{e}[/]")
 
@@ -218,7 +228,7 @@ class Shell:
                                   cell(f"{e:.2f}" if e else ""), cell(b), cell(f"{tr['artist']} - {tr['title']}"))
                     t += tr["duration"]
                 hint = ("↑/↓ carry it · Enter drop here · Esc cancel" if state["grab"] is not None
-                        else "↑/↓ move · Enter pick up · d delete · a add · r reroll · q back")
+                        else "↑/↓ move · Enter pick up · d delete · b block · a add · r reroll · q back")
                 return Group(table, Text(hint, style="dim"))
 
             def on_move(old, new, order=order, state=state):
@@ -233,8 +243,8 @@ class Shell:
                     return idx, ("drop", state["grab"] + 1, idx + 1)
                 if key == "esc" or key == "q":
                     return idx, ("reload",) if state["grab"] is not None else ("quit",)
-                if state["grab"] is None and key in ("d", "a", "r"):
-                    return idx, ({"d": "delete", "a": "add", "r": "reroll"}[key], idx + 1)
+                if state["grab"] is None and key in ("d", "a", "r", "b"):
+                    return idx, ({"d": "delete", "a": "add", "r": "reroll", "b": "block"}[key], idx + 1)
                 return idx, None
 
             action = self.keys._loop(render, len(order), on_key, cursor, on_move)
@@ -251,6 +261,9 @@ class Shell:
                     if self.yes(f"Delete {t['artist']} - {t['title']}?", default=True):
                         editing.remove_tracks(self.cfg, self.db, {action[1]})
                     cursor = max(0, min(action[1] - 1, len(order) - 2))
+                elif kind == "block":
+                    self.block_track(action[1], order[action[1] - 1])
+                    cursor = max(0, min(action[1] - 1, len(order) - 2))
                 elif kind == "add":
                     self.add_track()
                     cursor = 0
@@ -262,6 +275,38 @@ class Shell:
             except (ValueError, RuntimeError) as e:
                 self.say(f"[red]{e}[/]")
 
+    def block_track(self, position: int, track: dict) -> None:
+        """Never play this track (or its artist) again, and take it (all of them) out of the staged playlist now."""
+        artist, title = track["artist"], track["title"]
+        choices = [f"Only this track: {artist} - {title}", f"Every track by {artist}"]
+        if self.keys:
+            pick = self.keys.select(choices, title="Block")
+        else:
+            a = self.ask(f"Block 1) only this track  2) every track by {artist}  (Enter cancels)")
+            pick = int(a) - 1 if a in ("1", "2") else None
+        if pick is None:
+            raise _Cancel
+        blocklist.block(self.db, artist, "" if pick == 1 else title)
+        _, m = self.session()
+        blocked = blocklist.Blocklist.load(self.db)
+        gone = {t["position"] for t in m["tracks"] if blocked.blocks(t["artist"], t["title"])} | {position}
+        editing.remove_tracks(self.cfg, self.db, gone)
+        self.say(f"[green]blocked {blocklist.describe(artist, '' if pick == 1 else title)}[/]: removed {len(gone)} from "
+                 "the playlist, never picked again")
+
+    def blocklist(self) -> None:
+        rows = blocklist.entries(self.db)
+        if rows:
+            for i in self.pick_many([blocklist.describe(*r) for r in rows], "Blocked: tick any to unblock"):
+                blocklist.unblock(self.db, *rows[i])
+                self.say(f"[green]unblocked[/] {blocklist.describe(*rows[i])}")
+        else:
+            self.say("[dim]Nothing blocked yet.[/]")
+        artist = self.ask("Block an artist (exact name, Enter = done)")
+        if artist:
+            blocklist.block(self.db, artist)
+            self.say(f"[green]blocked {blocklist.describe(artist)}[/]: never picked again (re-roll to drop them now)")
+
     def reroll(self, show: bool = True) -> None:
         if not self.cfg.device_path.is_dir():
             self.say(f"[red]{self.cfg.device_name} is not connected.[/]")
@@ -270,14 +315,16 @@ class Shell:
         if row and not self.yes("Replace the staged playlist? It will not be scrobbled", default=True):
             return
         if self.yes("Refresh Last.fm history and the pool first? (slower)", default=False):
-            self.say(f"[dim]{self.act.sync(False)}[/]")
+            with self.busy("syncing Last.fm history and the pool"):
+                self.say(f"[dim]{self.act.sync(False)}[/]")
             self._library = None
         workout = self.pick_workout()
         seed = self.ask("Seed (blank = random)")
-        self.say("[dim]building playlist (levelling tracks new to the cache takes a moment) ...[/]")
         try:
-            m = flow.reroll(self.cfg, self.db, int(seed) if seed.isdigit() else None,
-                            library_loader=lambda _: self.library(), feature_of=self.act.features, workout=workout)
+            with self.busy("building the playlist"):
+                m = flow.reroll(self.cfg, self.db, int(seed) if seed.isdigit() else None,
+                                library_loader=lambda _: self.library(), feature_of=self.act.features, workout=workout,
+                                progress=self.busy.update)
         except RuntimeError as e:
             self.say(f"[red]{e}[/]")
             return
@@ -314,12 +361,14 @@ class Shell:
             return
         n_swim, _ = stats.swim_split(m, m.get("minutes", self.cfg.minutes))
         pos = self.ask(f"Position 1-{len(m['tracks']) + 1} (1 plays first; Enter = {n_swim}, the end of your swim)", str(n_swim))
-        feat = self.act.features(track)
+        with self.busy("measuring the track's energy"):
+            feat = self.act.features(track)
         if feat.energy < self.cfg.min_energy and not self.yes(
                 f"Energy {feat.energy:.2f} is below your minimum {self.cfg.min_energy}: a slow track. Add anyway?"):
             return
         try:
-            editing.add_track(self.cfg, self.db, track, int(pos) if pos.isdigit() else n_swim, round(feat.energy, 2))
+            with self.busy("levelling and copying the track"):
+                editing.add_track(self.cfg, self.db, track, int(pos) if pos.isdigit() else n_swim, round(feat.energy, 2))
         except (ValueError, RuntimeError) as e:
             self.say(f"[red]{e}[/]")
             return
@@ -353,7 +402,8 @@ class Shell:
         raise _Cancel
 
     def pick_youtube(self, query: str) -> Track | None:
-        results = self.act.search_youtube(query)
+        with self.busy("searching YouTube Music"):
+            results = self.act.search_youtube(query)
         if not results:
             self.say("[yellow]no results[/]")
             return None
@@ -376,8 +426,9 @@ class Shell:
         if not (a.isdigit() and 1 <= int(a) <= len(results)):
             return None
         r = results[int(a) - 1]
-        self.say("[dim]downloading ...[/]")
-        if not self.act.download_video(r["videoId"]):
+        with self.busy(f"downloading {r.get('title', '')}"):
+            ok = self.act.download_video(r["videoId"])
+        if not ok:
             self.say("[red]download failed[/]")
             return None
         lib = self.library(refresh=True)
@@ -440,13 +491,14 @@ class Shell:
                 return
             idx = list(range(1, 6)) if a.startswith("top") else [int(x) for x in a.replace(" ", "").split(",") if x.isdigit()]
         got = 0
-        for i in idx:
-            if not 1 <= i <= min(20, len(items)):
-                continue
+        idx = [i for i in idx if 1 <= i <= min(20, len(items))]
+        for n, i in enumerate(idx, 1):
             label = items[i - 1][0]
             artist, _, title = label.partition(" - ")
-            entry = self.act.find_song(artist, title)
-            if entry and self.act.download_video(entry.video_id):
+            with self.busy(f"downloading {n}/{len(idx)}: {label}"):
+                entry = self.act.find_song(artist, title)
+                ok = bool(entry) and self.act.download_video(entry.video_id)
+            if ok:
                 got += 1
                 self.say(f"[green]downloaded[/] {label}")
             else:
@@ -468,14 +520,15 @@ class Shell:
         eps = self.act.podcast_episodes()
         picked = self.pick_many([e["title"] for e in eps], "Finished any?") if eps else []
         if picked:
-            self.say(self.act.mark_played([eps[i] for i in picked]))
-        self.say("[dim]syncing podcasts (speeding up / trimming new episodes takes a moment) ...[/]")
-        self.say(self.act.podcasts())
+            with self.busy("marking them played in Pocket Casts"):
+                self.say(self.act.mark_played([eps[i] for i in picked]))
+        with self.busy("syncing podcasts"):
+            self.say(self.act.podcasts())
 
     def sync(self) -> None:
         download = self.yes("Also download missing playlist and wishlist tracks?", default=True)
-        self.say("[dim]syncing ... (first run after a long gap can take a while)[/]")
-        self.say(self.act.sync(download))
+        with self.busy("syncing Last.fm history and the pool (the first run after a long gap takes a while)"):
+            self.say(self.act.sync(download))
         self.library(refresh=True)
 
     def scrobble(self) -> None:
@@ -488,7 +541,8 @@ class Shell:
                 f"This was staged only {age_min:.0f} min ago. Scrobble anyway?"):
             return
         now = datetime.now()
-        found = flow.lookup_swim(self.act.find_swim, row, now, lambda msg: self.say(f"[yellow]{msg}[/]"))
+        with self.busy("looking for the swim on Garmin Connect"):
+            found = flow.lookup_swim(self.act.find_swim, row, now, lambda msg: self.say(f"[yellow]{msg}[/]"))
         if found:
             self.say(f"Garmin: [bold]{found.describe()}[/]")
         default = found.minutes if found else m.get("minutes", self.cfg.minutes)
@@ -505,13 +559,20 @@ class Shell:
         if not scrobbles or not self.yes("Send these to Last.fm?", default=True):
             return
         try:
-            msg = self.act.submit(scrobbles)
+            with self.busy("sending to Last.fm"):
+                msg = self.act.submit(scrobbles)
         except Exception as e:  # keep the session so nothing is lost
             self.say(f"[red]failed: {e}[/] (the session is still pending)")
             return
         flow.record(self.db, row, settled)
         flow._set_handled(False)
         self.say(f"[green]{msg}[/]")
+        if settled.swim and self.act.garmin_sync:
+            try:
+                with self.busy("timing your tracks against the Garmin lengths"):
+                    self.say(f"Garmin: {self.act.garmin_sync()}")
+            except Exception as e:
+                self.say(f"[yellow]Garmin analysis failed: {e}[/]")
         self.discoveries(settled.plan)
         if self.yes("Stage the next playlist now?", default=True):
             self.reroll()
@@ -522,7 +583,9 @@ class Shell:
         picked = self.pick_many([f"{a} - {t}" for a, t in new], "New to you this swim: liked any?") if new else []
         if picked:
             try:
-                self.say(f"[green]{self.act.love([new[i] for i in picked])}[/]")
+                with self.busy("loving them on Last.fm"):
+                    msg = self.act.love([new[i] for i in picked])
+                self.say(f"[green]{msg}[/]")
             except Exception as e:
                 self.say(f"[red]could not love them: {e}[/]")
 
@@ -556,6 +619,12 @@ class Shell:
         elif self.yes(f"Remove the {n} leftover tracks of session {sid} from the headphones?", default=True):
             self.say(f"[green]removed {flow.clear_orphans(self.cfg, self.db)} files[/]")
 
+    def on_connect(self) -> None:
+        with self.busy("running the on-connect routine"):
+            log = self.act.on_connect()
+        for line in log:
+            self.say(line)
+
     def agent(self) -> None:
         on = self.act.agent_installed()
         self.say("The agent runs the whole routine automatically whenever the headphones are plugged in "
@@ -568,12 +637,12 @@ class Shell:
         handlers: dict[str, Callable[[], None]] = {
             "p": self.playlist, "r": self.reroll, "a": self.add_track, "s": self.stats, "w": self.wishlist,
             "y": self.sync, "c": self.scrobble, "k": self.skip, "u": self.adopt, "x": self.clear,
-            "o": self.podcasts, "v": self.recap,
-            "e": lambda: [self.say(x) for x in self.act.on_connect()], "g": self.agent,
+            "o": self.podcasts, "v": self.recap, "b": self.blocklist,
+            "e": self.on_connect, "g": self.agent,
             "?": lambda: self.say(HELP), "h": lambda: self.say(HELP),
         }
         names = {"playlist": "p", "reroll": "r", "add": "a", "stats": "s", "wishlist": "w", "sync": "y", "scrobble": "c",
-                 "skip": "k", "podcasts": "o", "recap": "v", "on-connect": "e", "agent": "g", "help": "?", "quit": "q", "exit": "q"}
+                 "skip": "k", "podcasts": "o", "blocklist": "b", "recap": "v", "on-connect": "e", "agent": "g", "help": "?", "quit": "q", "exit": "q"}
         if self.keys:
             return self.run_keys(handlers)
         self.dashboard()
@@ -612,6 +681,7 @@ class Shell:
         Item("u", "Use leftovers", "files on the headphones from a discarded session"),
         Item("x", "Remove leftovers", "delete those files"),
         Item("v", "Recap", "the last 7 days of swimming"),
+        Item("b", "Blocklist", "artists and tracks you never want to hear"),
         Item("o", "Podcasts", "newest unplayed episodes"),
         Item("e", "On-connect", "run the whole routine now"),
         Item("g", "Agent", "install / remove the plug-in agent"),
@@ -649,8 +719,9 @@ class _Cancel(Exception):
     pass
 
 
-def real_actions(cfg: Config, db) -> Actions:
-    """The production wiring: the same functions the command line uses."""
+def real_actions(cfg: Config, db, progress: flow.Progress = flow._quiet) -> Actions:
+    """The production wiring: the same functions the command line uses. `progress` receives step updates from
+    the long ones (the shell's spinner)."""
     from . import acquire, cli, garmin, lastfm, launchd, pocketcasts, ytm
     from .energy import cached_features
     from .library import scan_config
@@ -662,7 +733,7 @@ def real_actions(cfg: Config, db) -> Actions:
                 f"{rep.playlist_total} found · {len(p.missing)} wishlist entries")
 
     def podcasts() -> str:
-        return str(cli.podcast_sync(cfg, db, only_if_logged_in=False)())
+        return str(cli.podcast_sync(cfg, db, only_if_logged_in=False, progress=progress)())
 
     def love(tracks: list[tuple[str, str]]) -> str:
         sk = lastfm.load_session_key()
@@ -682,8 +753,8 @@ def real_actions(cfg: Config, db) -> Actions:
 
     def on_connect() -> list[str]:
         return flow.on_connect(cfg, db, notify=cli.notify, pool_sync=lambda: sync(cfg.auto_download), force=True,
-                               find_swim=garmin.finder(cfg),
-                               podcast_sync=cli.podcast_sync(cfg, db))
+                               find_swim=garmin.finder(cfg), progress=progress, garmin_sync=cli.garmin_sync(cfg, db),
+                               podcast_sync=cli.podcast_sync(cfg, db, progress=progress))
 
     def submit(scrobbles: list) -> str:
         return flow.describe_sent(flow.send_scrobbles(scrobbles, cfg), scrobbles, cfg)
@@ -702,5 +773,6 @@ def real_actions(cfg: Config, db) -> Actions:
         find_song=lambda a, t: acquire.find_song(a, t),
         podcasts=podcasts, on_connect=on_connect, submit=submit, mark_played=mark_played, love=love,
         podcast_episodes=lambda: pocketcasts.on_device(db), find_swim=garmin.finder(cfg),
+        garmin_sync=cli.garmin_sync(cfg, db),
         agent_installed=lambda: Path(launchd.PLIST).exists(), agent_set=agent_set,
     )

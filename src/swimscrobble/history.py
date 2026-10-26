@@ -49,6 +49,14 @@ MIGRATIONS = [  # append only; PRAGMA user_version counts how many have run
     _add_column("sessions", "distance_m", "REAL"),
     _sql("CREATE TABLE IF NOT EXISTS skips(session_id INTEGER, artist TEXT, title TEXT, ts REAL)"),
     _add_column("podcasts", "variant", "TEXT"),  # how the file was processed (speed / trim); refetch on change
+    _sql("""CREATE TABLE IF NOT EXISTS blocked(
+      artist TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', PRIMARY KEY(artist, title))"""),  # title '' = whole artist
+    _sql("""CREATE TABLE IF NOT EXISTS swims(
+      activity_id INTEGER PRIMARY KEY, session_id INTEGER, start REAL, kind TEXT, distance_m REAL, elapsed_s REAL,
+      moving_s REAL, avg_hr REAL, max_hr REAL, swolf REAL, hr_zones TEXT, analysed INTEGER NOT NULL DEFAULT 0)"""),
+    _sql("""CREATE TABLE IF NOT EXISTS swim_tracks(
+      activity_id INTEGER, artist TEXT, title TEXT, lengths INTEGER, distance_m REAL, seconds REAL, hr REAL,
+      swolf REAL, rel_speed REAL)"""),  # rel_speed: this track's speed over the whole swim's, minus 1
 ]
 
 

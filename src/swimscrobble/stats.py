@@ -7,9 +7,9 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 
-from . import history
+from . import history, power
 from .config import Config, config_dir
-from .planner import NEW_TO_YOU
+from .planner import NEW_TO_YOU, fmt_min
 
 DAY = 86400
 
@@ -131,9 +131,35 @@ class Recap:
     discoveries: list[tuple[str, str]] = field(default_factory=list)  # new-to-you tracks you heard and kept
     skipped: int = 0
     top_artists: list[tuple[str, int]] = field(default_factory=list)
+    # from Garmin (every swim the watch recorded, with or without the headphones)
+    paces: list[float] = field(default_factory=list)  # s/100m of the last swims, oldest first
+    weekly_km: list[float] = field(default_factory=list)  # the last 4 weeks, oldest first
+    avg_hr: float | None = None
+    hr_zones: list[float] = field(default_factory=list)  # share of time in zones 1-5
+    fastest: list[tuple[str, str, float]] = field(default_factory=list)  # power songs
+    slowest: list[tuple[str, str, float]] = field(default_factory=list)
 
 
     def lines(self) -> list[str]:
+        return self._music_lines() + self._garmin_lines()
+
+    def _garmin_lines(self) -> list[str]:
+        out = []
+        if self.paces:
+            trend = " → ".join(fmt_min(round(p)) for p in self.paces)
+            out.append(f"Pace per 100 m, last {len(self.paces)} swims: {trend} (best {fmt_min(round(min(self.paces)))})")
+        if any(self.weekly_km):
+            out.append("Distance per week, last 4: " + " · ".join(f"{k:.1f}" for k in self.weekly_km) + " km")
+        if self.avg_hr:
+            zones = " ".join(f"{z:.0%}" for z in self.hr_zones)
+            out.append(f"Heart rate: avg {self.avg_hr:.0f} bpm" + (f" · time in zones 1-5: {zones}" if zones else ""))
+        if self.fastest:
+            out.append("Power songs (you swim faster): " + " · ".join(f"{a} - {t} {s:+.0%}" for a, t, s in self.fastest))
+        if self.slowest:
+            out.append("Slow you down: " + " · ".join(f"{a} - {t} {s:+.0%}" for a, t, s in self.slowest))
+        return out
+
+    def _music_lines(self) -> list[str]:
         if not self.swims:
             return [f"No swims scrobbled in the last {self.days} days."]
         head = [f"{self.swims} swims", f"{self.minutes / 60:.1f} h"]
@@ -171,7 +197,25 @@ def recap(db, days: int = 7, now: float | None = None) -> Recap:
             r.discoveries.append((p["artist"], p["title"]))
     r.skipped = db.execute(f"SELECT COUNT(*) c FROM skips WHERE session_id IN ({window})", since).fetchone()["c"]
     r.top_artists = artists.most_common(5)
+    garmin_recap(db, r, now)
     return r
+
+
+def garmin_recap(db, r: Recap, now: float, trend: int = 6) -> None:
+    """Pace trend, weekly distance, heart rate and power songs, from the swims Garmin sync remembered."""
+    rows = db.execute("SELECT start, distance_m, elapsed_s, moving_s, avg_hr, hr_zones FROM swims "
+                      "WHERE start <= ? ORDER BY start", (now,)).fetchall()
+    r.paces = [(s["moving_s"] or s["elapsed_s"]) / (s["distance_m"] / 100) for s in rows if s["distance_m"]][-trend:]
+    r.weekly_km = [sum(s["distance_m"] or 0 for s in rows if now - (w + 1) * 7 * DAY < s["start"] <= now - w * 7 * DAY)
+                   / 1000 for w in range(3, -1, -1)]
+    recent = [s for s in rows if s["start"] > now - r.days * DAY]
+    timed = [(s["avg_hr"], s["moving_s"] or s["elapsed_s"]) for s in recent if s["avg_hr"]]
+    if timed:
+        r.avg_hr = sum(h * t for h, t in timed) / sum(t for _, t in timed)
+    zones = [sum(z) for z in zip(*(json.loads(s["hr_zones"]) for s in recent if s["hr_zones"] not in (None, "[]")))]
+    if sum(zones):
+        r.hr_zones = [z / sum(zones) for z in zones]
+    r.fastest, r.slowest = power.leaderboard(db)
 
 
 def listening_mix(db, days: int = 30, now: float | None = None) -> dict[str, float]:

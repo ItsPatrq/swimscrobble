@@ -70,9 +70,21 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
    easy blocks), `pyramid` (build to a peak half-way, then down), `easy` (calmer tracks, even and low). Default
    `workout` in config; per swim with `reroll --workout intervals` or the shell's reroll.
 10. **Recap**: `swimscrobble recap [--days 7]` or shell `v`: swims, hours, distance (Garmin), tracks heard,
-    skips, most swum artists and the discoveries you heard.
+    skips, most swum artists and the discoveries you heard. With Garmin also: pace per 100 m over your last swims,
+    distance per week, average heart rate and time in each zone, and your power songs.
 11. **One notification per plug-in**, e.g. `6 podcasts (2 new) · Garmin lap swimming Sat 08:05, 55 min: scrobbled
     11 tracks · staged 26 tracks, 119 min, 4 new`; anything that failed is in it, in capitals.
+12. **Power songs** (Garmin): the watch records every pool length with its start time, so each length belongs to
+    the track playing at the time. Each track gets a speed relative to that whole swim (plus heart rate and
+    SWOLF); averaged over swims and trusted more as lengths add up, it makes the mix pick tracks you swim faster to
+    more often and the ones that slow you down less (up to ±25-30%). Runs on every plug-in after settling, or with
+    `swimscrobble garmin-sync`. Caveat: the last minutes of a swim are often a cool-down, so tracks there look slower.
+13. **Soundtrack on the activity** (`garmin_soundtrack = true`): the tracks you swam to, with your pace for each,
+    are written into the Garmin activity's description (which Strava copies when linked). Your own description text
+    is kept; re-running replaces only the soundtrack part.
+14. **Blocklist**: `swimscrobble block "The Weeknd"` (or `block "Artist" "Title"` for one track; no arguments lists,
+    `--remove` unblocks), the shell's `b` on a playlist track, or the shell's blocklist menu. Blocked music is never
+    picked, pooled, wished for or downloaded; an artist block also catches collaborations and features.
 
 ## Install
 
@@ -112,6 +124,9 @@ podcast_trim_silence = true
 loudness_target = -11        # LUFS; 0 = copy files untouched
 garmin = false               # true after `swimscrobble garmin-auth`
 garmin_auto_submit = true    # a swim found on Garmin is scrobbled without asking
+garmin_soundtrack = true     # write what you swam to into the Garmin activity's description
+warmup_minutes = 7           # with Garmin: music starts this long before the watch (scrobbled too)
+cooldown_minutes = 8         # with Garmin: and plays on this long after the swim (scrobbled too)
 workout = "steady"           # steady | intervals | pyramid | easy
 space_reserve_mb = 200       # always left free on the headphones
 ytm_auth_file = "~/.config/swimscrobble/ytm_browser.json"   # written by `swimscrobble ytm-auth`
@@ -133,6 +148,8 @@ no_repeat_days = 7
 | `recap [--days N]` | swims, time, distance, tracks, skips, discoveries |
 | `ytm-auth` | YouTube Music browser login, only to add liked discoveries to your playlist |
 | `garmin-auth` | one-time Garmin Connect login (email, password, MFA code if enabled); only tokens are stored |
+| `garmin-sync [--days 60]` | read your Garmin swims; time the tracks of scrobbled swims (power songs) and write their soundtrack |
+| `block [artist] [title] [--remove]` | never play an artist or one track; no arguments lists the blocklist |
 | `lastfm-auth` | one-time Last.fm authorisation (`LASTFM_API_KEY`/`LASTFM_API_SECRET`) |
 | `playlist [url] [--download]` | list which playlist tracks exist under `music_dir`; `--download` fetches the missing ones |
 | `sync [--download [--yes]] [--fetch-missing N]` | refresh the swim pool: Last.fm 30/60/90-day charts, all-time top/loved, similar tracks, artist and genre top tracks, plus the playlist; optionally offer to download N wanted tracks you don't have yet |

@@ -285,3 +285,193 @@ def test_podcast_and_staged_summaries():
     assert str(pocketcasts.PodcastReport(downloaded=["a"], failed=["b: 403"], on_device=6)) == "6 podcasts (1 new), 1 FAILED"
     m = {"tracks": [{"duration": 600, "source": "rec"}, {"duration": 600, "source": "obsession"}], "workout": "intervals"}
     assert flow.staged_summary(m) == "staged 2 tracks, 20 min, 1 new (intervals)"
+
+
+def test_busy_spinner_nests_and_ignores_updates_when_idle():
+    import io
+
+    from rich.console import Console
+
+    from swimscrobble.ui import Busy
+
+    out = io.StringIO()
+    busy = Busy(Console(file=out, force_terminal=True, width=80))
+    busy.update("nothing running")  # no spinner: must not raise or print
+    with busy("outer"):
+        with busy("inner"):
+            busy.update("step 1/2")
+        assert busy._status is not None
+    assert busy._status is None and "nothing running" not in out.getvalue()
+    plain = io.StringIO()
+    with Busy(Console(file=plain, force_terminal=False))("syncing"):
+        pass
+    assert plain.getvalue() == "syncing ...\n"
+
+
+def test_podcast_sync_reports_fetch_progress(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    eps = [{"uuid": f"u{i}", "title": f"Ep {i}", "url": f"https://x/{i}.mp3"} for i in range(2)]
+    steps = []
+    pocketcasts.sync_queue(eps, tmp_path / "dev", db, fetcher=lambda url, dest: dest.write_bytes(b"x"),
+                           progress=steps.append)
+    assert steps[0] == "podcasts: fetching 0/2" and "podcasts: fetched 2/2" in steps
+    assert steps[-1] == "podcasts: copying to the headphones 2/2"
+
+
+def test_blocklist_matches_artists_collaborations_and_single_tracks(tmp_path):
+    from swimscrobble import blocklist
+
+    db = history.connect(tmp_path / "h.db")
+    blocklist.block(db, "The Weeknd")
+    blocklist.block(db, "Daft Punk", "One More Time")
+    b = blocklist.Blocklist.load(db)
+    assert b.blocks("The Weeknd", "Blinding Lights")
+    assert b.blocks("the weeknd", "Save Your Tears (Remix)")
+    assert b.blocks("Daft Punk, The Weeknd", "Starboy")
+    assert b.blocks("Ariana Grande", "Save Your Tears (with The Weeknd)")
+    assert b.blocks("Daft Punk", "One More Time (Radio Edit)")
+    assert not b.blocks("Daft Punk", "Get Lucky")
+    assert not b.blocks("Weekend Players", "21st Century")  # whole words only
+    assert blocklist.unblock(db, "the weeknd") and not blocklist.Blocklist.load(db).blocks("The Weeknd", "Starboy")
+
+
+# --- Garmin: power songs, soundtrack, recap ---------------------------------------------------------
+
+from datetime import timedelta  # noqa: E402
+
+from swimscrobble import power  # noqa: E402
+
+
+def lengths_doc(start_gmt, speeds, seconds=40):
+    """splits JSON with one 25 m length per entry of `speeds` (1.0 = normal), back to back from `start_gmt`."""
+    t, out = datetime.fromisoformat(start_gmt), []
+    for i, v in enumerate(speeds):
+        out.append({"startTimeGMT": t.isoformat(), "distance": 25.0, "duration": seconds / v, "averageHR": 120 + i,
+                    "averageSWOLF": 50})
+        t += timedelta(seconds=seconds / v)
+    out.append({"startTimeGMT": t.isoformat(), "distance": 0.0, "duration": 30})  # a rest: no distance
+    return {"lapDTOs": [{"lengthDTOs": out}]}
+
+
+def test_garmin_parse_keeps_ids_offset_pace_and_zones():
+    s = garmin.parse(act("lap_swimming", "2026-10-25 21:28:49", 1888, distance=1200.0, activityId=7,
+                         startTimeGMT="2026-10-25 20:28:49", movingDuration=1500, averageHR=130,
+                         hrTimeInZone_1=60, hrTimeInZone_3=600))
+    assert s.activity_id == 7 and s.utc_offset == timedelta(hours=1) and round(s.pace) == 125
+    assert s.hr_zones == (60, 0.0, 600, 0.0, 0.0) and "2:05/100m" in s.describe()
+    ls = garmin.parse_lengths(lengths_doc("2026-10-25T20:28:49", [1, 1]), s.utc_offset)
+    assert len(ls) == 2 and ls[0].start == datetime(2026, 10, 25, 21, 28, 49)
+
+
+def test_lengths_are_split_between_tracks_and_compared_with_the_whole_swim():
+    t0 = datetime(2026, 10, 25, 9)
+    heard = [power.Heard("A", "fast", t0, 200), power.Heard("B", "slow", t0 + timedelta(seconds=200), 200),
+             power.Heard("C", "wall", t0 + timedelta(seconds=400), 200)]
+    ls = garmin.parse_lengths(lengths_doc("2026-10-25T09:00:00", [1.25] * 6 + [0.8] * 4), timedelta(0))
+    e = {x.title: x for x in power.analyse(heard, ls, uncertainty_minutes=0)}
+    assert set(e) == {"fast", "slow"}  # nothing swum while C played
+    assert e["fast"].rel_speed > 0.1 > -0.1 > e["slow"].rel_speed and e["fast"].lengths == 6
+    assert e["fast"].hr and e["fast"].pace < e["slow"].pace
+
+
+def _scrobbled_session(db, start):
+    manifest = {"tracks": [{"position": 1, "artist": "A", "title": "fast", "duration": 400},
+                           {"position": 2, "artist": "B", "title": "slow", "duration": 400}]}
+    sid = history.add_session(db, manifest, 60, None, "x", at=(start - timedelta(hours=3)).timestamp())
+    history.mark_scrobbled(db, sid, [("A", "fast", start.timestamp()), ("B", "slow", (start + timedelta(seconds=400)).timestamp())])
+    return sid
+
+
+def test_garmin_sync_times_the_session_writes_the_soundtrack_once_and_feeds_the_mix(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    start = datetime.now().replace(microsecond=0) - timedelta(days=1)
+    sid = _scrobbled_session(db, start)
+    gmt = start - timedelta(hours=1)
+    acts = [act("lap_swimming", start.isoformat(" "), 600, distance=250.0, activityId=11, movingDuration=450,
+                startTimeGMT=gmt.isoformat(" "), averageHR=125),
+            act("lap_swimming", (start - timedelta(days=3)).isoformat(" "), 1800, distance=1000.0, activityId=10)]
+    written = []
+    cfg = SimpleNamespace(garmin_soundtrack=True)
+    run = lambda: power.sync(db, cfg, fetch_swims=lambda a, b: acts,  # noqa: E731
+                             fetch_lengths=lambda s: garmin.parse_lengths(
+                                 lengths_doc(gmt.isoformat(), [1.25] * 10 + [0.8] * 8), s.utc_offset),
+                             write_soundtrack=lambda aid, text: written.append((aid, text)))
+    msg = run()
+    assert "2 swims" in msg and "timed 2 tracks in 1 new swim" in msg and "fastest to A - fast" in msg
+    assert written[0][0] == 11 and "1. A - fast (" in written[0][1] and "2. B - slow" in written[0][1]
+    assert db.execute("SELECT session_id FROM swims WHERE activity_id=11").fetchone()[0] == sid
+    run()
+    assert len(written) == 1  # already analysed: not timed or written again
+    s = power.scores(db)
+    assert s[("a", "fast")] > 0 > s[("b", "slow")]
+    fastest, slowest = power.leaderboard(db)
+    assert fastest[0][:2] == ("A", "fast") and slowest[0][:2] == ("B", "slow")
+
+
+def test_soundtrack_keeps_your_own_description_and_replaces_an_old_one():
+    first = garmin.with_soundtrack("", "♫ Swam to (swimscrobble):\n1. X")
+    assert first == "♫ Swam to (swimscrobble):\n1. X"
+    mine = garmin.with_soundtrack("Felt great\n\n" + first, "♫ Swam to (swimscrobble):\n1. Y")
+    assert mine == "Felt great\n\n♫ Swam to (swimscrobble):\n1. Y"
+
+
+def test_mix_prefers_power_songs(tmp_path):
+    from swimscrobble.energy import Features
+    from swimscrobble.library import Track
+    from swimscrobble.mix import build_mix
+
+    lib = [Track(tmp_path / f"{i}.mp3", f"Artist{i}", f"T{i}", "", 240) for i in range(40)]
+    feat = lambda t: Features(120, -7, 150, 0.6, 0.8)  # noqa: E731
+    boosted = {("artist0", "t0"): 0.1, ("artist1", "t1"): 0.1, ("artist2", "t2"): 0.1}
+    hits = {k: 0 for k in (False, True)}
+    for seed in range(30):
+        for on in (False, True):
+            plan = build_mix(lib, [], feat, minutes=40, swim_minutes=40, seed=seed, power=boosted if on else None)
+            hits[on] += sum(p.track.title in ("T0", "T1", "T2") for p in plan)
+    assert hits[True] > hits[False]
+
+
+def test_recap_shows_pace_trend_weekly_distance_heart_rate_and_power_songs(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    now = datetime(2026, 10, 26, 12)
+    for i, (days_ago, pace) in enumerate([(20, 140), (9, 132), (2, 125)]):
+        s = garmin.Swim(now - timedelta(days=days_ago), 40, "lap_swimming", 1000.0, i + 1, timedelta(0),
+                        pace * 10 / 60, 130, 150, 50, (0, 600, 1200, 0, 0))
+        power.store_swim(db, s)
+    db.executemany("INSERT INTO swim_tracks VALUES(1,?,?,?,0,0,0,0,?)", [("A", "fast", 20, 0.1), ("B", "slow", 20, -0.08)])
+    from swimscrobble import stats
+
+    text = "\n".join(stats.recap(db, 7, now.timestamp()).lines())
+    assert "2:20 → 2:12 → 2:05 (best 2:05)" in text
+    assert "Distance per week, last 4: 0.0 · 1.0 · 1.0 · 1.0 km" in text
+    assert "avg 130 bpm" in text and "0% 33% 67% 0% 0%" in text
+    assert "Power songs (you swim faster): A - fast +8%" in text and "Slow you down: B - slow -6%" in text
+
+
+def test_missed_turns_count_double_and_stops_are_dropped():
+    t = datetime(2026, 10, 25, 9)
+    L = lambda s, strokes, stroke="FREESTYLE": garmin.Length(t, s, 25.0, strokes=strokes, stroke=stroke)  # noqa: E731
+    out = power.repaired([L(36, 12), L(35, 12), L(71, 27), L(70, 12), L(37, 13)])
+    assert [(n.seconds, n.distance_m) for n in out] == [(36, 25), (35, 25), (71, 50), (37, 25)]
+
+
+def test_breaststroke_is_compared_with_breaststroke():
+    t0 = datetime(2026, 10, 25, 9)
+    heard = [power.Heard("A", "free", t0, 300), power.Heard("B", "breast", t0 + timedelta(seconds=300), 300)]
+    ls, t = [], t0
+    for stroke, secs in [("FREESTYLE", 35)] * 8 + [("BREASTSTROKE", 45)] * 6:
+        ls.append(garmin.Length(t, secs, 25.0, strokes=12, stroke=stroke))
+        t += timedelta(seconds=secs)
+    e = {x.title: x for x in power.analyse(heard, ls, uncertainty_minutes=0)}
+    assert abs(e["free"].rel_speed) < 0.01 and abs(e["breast"].rel_speed) < 0.01  # each normal for its stroke
+
+
+def test_timing_uncertainty_spreads_lengths_near_a_track_change():
+    t0 = datetime(2026, 10, 25, 9)
+    heard = [power.Heard("A", "one", t0, 600), power.Heard("B", "two", t0 + timedelta(seconds=600), 600)]
+    ls = [garmin.Length(t0 + timedelta(seconds=40 * i), 40, 25.0) for i in range(30)]
+    sharp = power.analyse(heard, ls, uncertainty_minutes=0)
+    spread = power.analyse(heard, ls)
+    assert [e.lengths for e in sharp] == [15, 15]
+    assert sum(e.lengths for e in spread) < 30  # some lengths may fall outside the playlist (before it started)
+    assert all(e.lengths != 15 for e in spread)

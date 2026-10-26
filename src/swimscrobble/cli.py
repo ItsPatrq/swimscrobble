@@ -91,6 +91,11 @@ def cmd_scrobble_pending(a) -> None:
     if _deliver(settled.scrobbles, a, cfg):
         flow.record(db, row, settled)
         flow._set_handled(False)  # lets `on-connect` stage the next session without re-plugging
+        if settled.swim and (sync := garmin_sync(cfg, db)):
+            try:
+                print(f"Garmin: {sync()}")
+            except Exception as e:  # scrobbled already; the next on-connect retries the analysis
+                print(f"Garmin analysis failed: {e}")
         print("settled; run `swimscrobble on-connect` to stage the next session")
 
 
@@ -123,6 +128,22 @@ def cmd_recap(a) -> None:
     from . import stats
 
     print("\n".join(stats.recap(history.connect(), a.days).lines()))
+
+
+def cmd_block(a) -> None:
+    from . import blocklist
+
+    db = history.connect()
+    if a.artist:
+        if a.remove:
+            ok = blocklist.unblock(db, a.artist, a.title or "")
+            print(f"unblocked {blocklist.describe(a.artist, a.title)}" if ok else "not on the blocklist")
+        else:
+            blocklist.block(db, a.artist, a.title or "")
+            print(f"blocked {blocklist.describe(a.artist, a.title)}: left out of playlists, the pool and the wishlist")
+            return
+    rows = blocklist.entries(db)
+    print("\n".join(blocklist.describe(*r) for r in rows) if rows else "nothing blocked")
 
 
 def cmd_lastfm_auth(a) -> None:
@@ -312,14 +333,15 @@ def cmd_shell(a) -> None:
     from rich.console import Console
 
     from . import keys, shell
-    from .ui import KeyUI
+    from .ui import Busy, KeyUI
 
     cfg = cfgmod.load()
     db = history.connect()
     console = Console(highlight=False)
     plain = os.environ.get("SWIMSCROBBLE_PLAIN") or getattr(a, "plain", False)
     ui = KeyUI(console) if keys.available() and not plain else None
-    shell.Shell(cfg, db, shell.real_actions(cfg, db), console, keys=ui).run()
+    busy = Busy(console)
+    shell.Shell(cfg, db, shell.real_actions(cfg, db, busy.update), console, keys=ui, busy=busy).run()
 
 
 def cmd_podcasts(a) -> None:
@@ -336,16 +358,32 @@ def cmd_podcasts(a) -> None:
                                   trim_silence=cfg.podcast_trim_silence))
 
 
-def podcast_sync(cfg, db, only_if_logged_in: bool = True):
+def podcast_sync(cfg, db, only_if_logged_in: bool = True, progress=None):
     """The on-connect podcast step, or None when Pocket Casts was never set up (automatic runs must not prompt)."""
     from . import pocketcasts
-    from .flow import music_reserve_mb
+    from .flow import _quiet, music_reserve_mb
 
     if only_if_logged_in and not pocketcasts.saved_token():
         return None
     return lambda: pocketcasts.sync_latest(cfg.device_path / cfg.device_podcast_subdir, db, cfg.max_podcasts,
                                            speed=cfg.podcast_speed, trim_silence=cfg.podcast_trim_silence,
-                                           reserve_mb=music_reserve_mb(cfg, db))
+                                           reserve_mb=music_reserve_mb(cfg, db), progress=progress or _quiet)
+
+
+def garmin_sync(cfg, db):
+    """The Garmin step (swims, power songs, soundtrack), or None when Garmin is off or not authorised."""
+    from . import garmin, power
+
+    return (lambda: power.sync(db, cfg)) if garmin.finder(cfg) else None
+
+
+def cmd_garmin_sync(a) -> None:
+    from . import garmin, power
+
+    cfg = cfgmod.load()
+    if not garmin.authorised():
+        raise SystemExit("run `swimscrobble garmin-auth` first")
+    print(power.sync(history.connect(), cfg, days=a.days))
 
 
 def cmd_on_connect(a) -> None:
@@ -362,7 +400,7 @@ def cmd_on_connect(a) -> None:
         return f"+{len(rep.pool.added)} -{len(rep.pool.retired)}, {left} playlist tracks still missing"
 
     for line in flow.on_connect(cfg, db, notify=notify, podcast_sync=podcast_sync(cfg, db), pool_sync=pool_sync,
-                                find_swim=garmin.finder(cfg)):
+                                garmin_sync=garmin_sync(cfg, db), find_swim=garmin.finder(cfg)):
         print(line)
 
 
@@ -441,6 +479,14 @@ def main(argv=None) -> None:
     rc.add_argument("--days", type=int, default=7)
     rc.set_defaults(func=cmd_recap)
     sub.add_parser("garmin-auth", help="log in to Garmin Connect (swim times)").set_defaults(func=cmd_garmin_auth)
+    gs = sub.add_parser("garmin-sync", help="read Garmin swims; time the tracks of scrobbled swims (power songs)")
+    gs.add_argument("--days", type=int, default=60)
+    gs.set_defaults(func=cmd_garmin_sync)
+    bl = sub.add_parser("block", help="never play an artist (or one track); no arguments lists the blocklist")
+    bl.add_argument("artist", nargs="?")
+    bl.add_argument("title", nargs="?", help="only this track (default: every track by the artist)")
+    bl.add_argument("--remove", action="store_true", help="take it off the blocklist")
+    bl.set_defaults(func=cmd_block)
 
     pl = sub.add_parser("playlist", help="match a YouTube Music playlist to local files")
     pl.add_argument("url", nargs="?")

@@ -2,10 +2,12 @@
 
 1. refresh podcasts: newest unplayed episode of each Pocket Casts subscription (always, even if 2 stops early)
 2. settle the previous session (scrobble it, or park it for confirmation)
+   then, with Garmin: remember recent swims, time each track of the scrobbled one (power songs, soundtrack)
 3. plan + stage the next session
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import shutil
@@ -16,7 +18,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import audio, history, lastfm, listenbrainz
+from . import audio, history, lastfm, listenbrainz, power
+from .blocklist import Blocklist
 from .config import Config, config_dir, read_json, write_json
 from .energy import Features, cached_features
 from .generator import Candidate
@@ -31,6 +34,11 @@ if TYPE_CHECKING:
     from .garmin import Swim
 
 FindSwim = Callable[[datetime, datetime], "Swim | None"]  # (staged at, now) -> the swim in between
+Progress = Callable[[str], None]  # "what is happening now", for a spinner; may be called from worker threads
+
+
+def _quiet(_message: str) -> None:
+    pass
 
 
 STATE_FILE = "device_state.json"
@@ -76,13 +84,18 @@ class Settled:
 def settle(manifest: dict, cfg: Config, now: datetime, swim: Swim | None = None, played_minutes: float | None = None,
            skipped: set[int] = frozenset(), start: datetime | None = None) -> Settled:
     """The one place that turns a session into scrobbles. Length: what you said, else the Garmin swim, else the plan.
-    Start: what you said, else when the Garmin swim started, else counted back from `now` (plug-in)."""
-    if played_minutes is None and swim:
-        played_minutes = swim.minutes
-    plan, listened = played_part(manifest, played_minutes, skipped)
+    Start: what you said, else when the Garmin swim started, else counted back from `now` (plug-in).
+    With a Garmin swim the music started `warmup_minutes` before the watch and played on for `cooldown_minutes` after
+    it: those are heard (and scrobbled) too. The session still records the swim itself."""
+    swum = played_minutes if played_minutes is not None else swim.minutes if swim else None
+    warmup = cfg.warmup_minutes if swim else 0
+    listening = swum + warmup + (cfg.cooldown_minutes if swim else 0) if swum is not None else None
+    plan, listened = played_part(manifest, listening, skipped)
     if start is None:
-        start = swim.start if swim else now - timedelta(minutes=cfg.session_offset_minutes, seconds=listened)
-    return Settled(plan, build_scrobbles(plan, start), listened / 60, swim.distance_m if swim else None,
+        start = (swim.start - timedelta(minutes=warmup) if swim
+                 else now - timedelta(minutes=cfg.session_offset_minutes, seconds=listened))
+    return Settled(plan, build_scrobbles(plan, start), swum if swum is not None else listened / 60,
+                   swim.distance_m if swim else None,
                    [(t["artist"], t["title"]) for t in manifest["tracks"] if t["position"] in skipped], swim)
 
 
@@ -154,14 +167,24 @@ def clear_staged(stage_dir: Path, previous_manifest: dict | None) -> int:
     return n
 
 
-def stage_plan(plan: list[PlannedTrack], dest: Path, prepare: Callable[[Path], Path]) -> None:
+def stage_plan(plan: list[PlannedTrack], dest: Path, prepare: Callable[[Path], Path],
+               progress: Progress = _quiet) -> None:
     """Copy each planned file to `dest` under its play-order name. `prepare` maps a library file to the file to copy
     (audio.leveller: a cached levelled copy). Two phases: prepare in parallel on this machine (CPU-bound ffmpeg), then
     copy to the device one file at a time in play order (flash storage is slowest with interleaved writes)."""
     dest.mkdir(parents=True, exist_ok=True)
+    done = itertools.count(1)  # next() on a count is atomic in CPython: safe across the pool's threads
+
+    def prep(p: PlannedTrack) -> Path:
+        src = prepare(p.track.path)
+        progress(f"levelling tracks {next(done)}/{len(plan)}")
+        return src
+
+    progress(f"levelling tracks 0/{len(plan)}")
     with ThreadPoolExecutor(max_workers=max((os.cpu_count() or 2) // 2, 1)) as pool:
-        sources = list(pool.map(lambda p: prepare(p.track.path), plan))
-    for p, src in zip(plan, sources):
+        sources = list(pool.map(prep, plan))
+    for i, (p, src) in enumerate(zip(plan, sources), 1):
+        progress(f"copying to the headphones {i}/{len(plan)}")
         shutil.copy2(src, dest / p.staged_name)
     audio.prune()
 
@@ -182,10 +205,12 @@ def build_plan(db, cfg: Config, library: list[Track], seed: int | None = None,
         minutes=cfg.playlist_minutes, swim_minutes=cfg.minutes, seed=seed, quotas=cfg.mix_weights,
         min_energy=cfg.min_energy, max_per_artist=cfg.max_per_artist, variety=cfg.variety,
         plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
-        workout=workout or cfg.workout, skips=skips, artist_skips=artist_skips,
+        workout=workout or cfg.workout, skips=skips, artist_skips=artist_skips, power=power.scores(db),
     )
     kw.update({k: v for k, v in overrides.items() if v is not None})
-    return build_mix(library, pool_candidates(db), feature_of or (lambda t: cached_features(db, t)), **kw)
+    blocked = Blocklist.load(db)
+    return build_mix(blocked.keep(library), blocked.keep(pool_candidates(db)),
+                     feature_of or (lambda t: cached_features(db, t)), **kw)
 
 
 def fit_to_space(plan: list[PlannedTrack], cfg: Config) -> list[PlannedTrack]:
@@ -221,12 +246,15 @@ def plan_and_stage(
     feature_of: Callable[[Track], Features] | None = None,
     now: datetime | None = None,
     workout: str | None = None,
+    progress: Progress = _quiet,
 ) -> dict:
     stage_dir = cfg.stage_path
     stage_dir.mkdir(parents=True, exist_ok=True)  # clear_staged needs it before stage_plan runs
+    progress("removing the previous playlist")
     clear_staged(stage_dir, previous)
+    progress("picking tracks")
     plan = fit_to_space(build_plan(db, cfg, library, seed, feature_of, workout), cfg)
-    stage_plan(plan, stage_dir, audio.leveller(cfg.loudness))
+    stage_plan(plan, stage_dir, audio.leveller(cfg.loudness), progress)
     manifest = to_manifest(plan, seed, cfg.minutes)
     manifest["workout"] = workout or cfg.workout
     manifest["id"] = history.add_session(
@@ -243,7 +271,9 @@ def on_connect(
     feature_of: Callable[[Track], Features] | None = None,
     podcast_sync: Callable[[], object] | None = None,  # -> a report whose str() is the summary
     pool_sync: Callable[[], str] | None = None,
+    garmin_sync: Callable[[], str] | None = None,
     force: bool = False,
+    progress: Progress = _quiet,
     **deps,
 ) -> list[str]:
     """`force`: run even if this connection was already handled (the shell's "run it now")."""
@@ -273,14 +303,22 @@ def on_connect(
 
     try:
         if podcast_sync:  # independent of the playlist: runs on every connection
+            progress("syncing podcasts")
             step("podcasts", podcast_sync, str)
+        progress("settling the last swim")
         settled, may_stage = settle_previous(db, cfg, now, note.append, **deps)
         log.append(settled)
+        if garmin_sync:  # after settling: the swim just scrobbled gets its tracks timed (and its soundtrack)
+            progress("reading swims from Garmin Connect")
+            step("garmin", garmin_sync)
         if may_stage:  # never plan over an unsettled (or still current) session
             if pool_sync:  # a failed refresh must not block staging; the old pool still works
+                progress("syncing Last.fm history and the pool")
                 step("pool sync", pool_sync)
-            manifest = plan_and_stage(db, cfg, library_loader(cfg.music_path), previous=last_staged_manifest(db),
-                                      feature_of=feature_of, now=now)
+            progress("scanning the library")
+            library = library_loader(cfg.music_path)
+            manifest = plan_and_stage(db, cfg, library, previous=last_staged_manifest(db),
+                                      feature_of=feature_of, now=now, progress=progress)
             log.append(f"staged session {manifest['id']}: {len(manifest['tracks'])} tracks")
             note.append(staged_summary(manifest))
     except Exception as e:
@@ -308,6 +346,7 @@ def reroll(
     feature_of: Callable[[Track], Features] | None = None,
     now: datetime | None = None,
     workout: str | None = None,
+    progress: Progress = _quiet,
 ) -> dict:
     """Replace the staged playlist with a fresh one. The old session is discarded, not scrobbled."""
     if not cfg.device_path.is_dir():
@@ -315,8 +354,10 @@ def reroll(
     library_loader = library_loader or (lambda p: scan_config(cfg, p))
     previous = last_staged_manifest(db)
     history.discard_pending(db)
-    return plan_and_stage(db, cfg, library_loader(cfg.music_path), seed=seed, previous=previous, workout=workout,
-                          feature_of=feature_of, now=now)
+    progress("scanning the library")
+    library = library_loader(cfg.music_path)
+    return plan_and_stage(db, cfg, library, seed=seed, previous=previous, workout=workout,
+                          feature_of=feature_of, now=now, progress=progress)
 
 
 def last_staged(db):
