@@ -1,31 +1,25 @@
 """Read-only Last.fm taste data (top/loved tracks, similar tracks)."""
 from __future__ import annotations
 
-import json
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from .config import secret
-
-API_URL = "https://ws.audioscrobbler.com/2.0/"
+from .lastfm import API_URL, check
+from .net import request_json
 Transport = Callable[[dict], dict]
 
 
 def http_get(params: dict) -> dict:
-    with urllib.request.urlopen(f"{API_URL}?{urllib.parse.urlencode(params)}", timeout=30) as r:
-        return json.load(r)
+    return request_json(f"{API_URL}?{urllib.parse.urlencode(params)}")
 
 
 def _get(method: str, transport: Transport, **params) -> dict:
     key = secret("LASTFM_API_KEY")
     if not key:
         raise SystemExit("set LASTFM_API_KEY")
-    resp = transport({"method": method, "api_key": key, "format": "json", **params})
-    if "error" in resp:
-        raise RuntimeError(f"Last.fm error {resp['error']}: {resp.get('message')}")
-    return resp
+    return check(transport({"method": method, "api_key": key, "format": "json", **params}))
 
 
 def top_tracks(user: str, period: str = "6month", limit: int = 200, transport: Transport = http_get):
@@ -55,15 +49,6 @@ GENERIC_TAGS = {
     "seen live", "favorites", "favourites", "favourite", "albums i own", "male vocalists",
     "female vocalists", "under 2000 listeners", "all", "good", "awesome", "love", "my music",
 }
-
-
-def track_chart(user: str, start: int, end: int, transport: Transport = http_get) -> list[tuple[str, str, int]]:
-    """Tracks played between two unix timestamps (any range, unlike the fixed top-track periods)."""
-    d = _get("user.getWeeklyTrackChart", transport, user=user, **{"from": start, "to": end})
-    return [
-        (t["artist"]["#text"], t["name"], int(t.get("playcount", 0)))
-        for t in d.get("weeklytrackchart", {}).get("track", [])
-    ]
 
 
 def artist_top_tracks(artist: str, limit: int = 10, transport: Transport = http_get) -> list[tuple[str, str]]:

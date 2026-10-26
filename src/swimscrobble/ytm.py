@@ -32,6 +32,19 @@ def parse(data: dict) -> list[Entry]:
     return out
 
 
+def playlist_id(url: str) -> str:
+    from urllib.parse import parse_qs, urlparse
+
+    return (parse_qs(urlparse(url).query).get("list") or [url])[0]
+
+
+def add_to_playlist(auth_file, playlist_url: str, video_ids: list[str]) -> None:
+    """Needs browser auth (`swimscrobble ytm-auth`); reading playlists does not."""
+    from ytmusicapi import YTMusic
+
+    YTMusic(str(auth_file)).add_playlist_items(playlist_id(playlist_url), video_ids, duplicates=False)
+
+
 def fetch(url: str, run: Callable = subprocess.run, cookies: str | None = None) -> list[Entry]:
     cmd = ["yt-dlp", *(["--cookies", cookies] if cookies else []), "--flat-playlist", "-J", url]
     proc = run(cmd, capture_output=True, text=True, check=True)

@@ -22,7 +22,7 @@ def env(tmp_path, monkeypatch):
         lib.append(Track(f, f"Artist{i % 6}", f"Song{i}", "Alb", 300))
     vol = tmp_path / "Volumes"
     (vol / "SWIM PRO" / "Music").mkdir(parents=True)
-    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60)
+    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60, loudness_target=0)  # fake audio
     db = history.connect(tmp_path / "h.db")
     flow.on_connect(cfg, db, library_loader=lambda _: lib, notify=lambda m: None,
                     feature_of=lambda t: Features(120, -7, 150, 0.6, 0.8))

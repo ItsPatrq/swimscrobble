@@ -14,19 +14,9 @@ import math
 
 import numpy as np
 
+from .workouts import WORKOUTS
+
 W_ENERGY, W_TEMPO, W_BRIGHT, W_ARTIST, W_RUN, W_ARC = 1.5, 1.2, 0.3, 2.0, 0.6, 2.0
-
-
-def arc_target(p: float, lo: float, mid: float, hi: float) -> float:
-    """Target energy at fraction p (0..1) of the swim; >1 holds the plateau."""
-    if p >= 1.0:
-        return mid
-    if p < 0.12:
-        return lo + (mid - lo) * p / 0.12
-    if p < 0.9:
-        # two gentle surges between the plateau and the peak, continuous with warm-up and taper
-        return mid + (hi - mid) * (0.5 - 0.5 * math.cos(2 * math.pi * 2 * (p - 0.12) / 0.78))
-    return mid - (mid - lo) * 0.5 * (p - 0.9) / 0.1
 
 
 def tempo_gap(a: float, b: float) -> float:
@@ -47,11 +37,14 @@ def order(
     swim_seconds: float,
     rng: np.random.Generator,
     iters: int = 12000,
+    workout: str = "steady",
 ) -> list[int]:
     n = len(energy)
     if n < 3:
         return list(range(n))
     lo, mid, hi = (float(np.percentile(energy, p)) for p in (25, 60, 90))
+    shape = WORKOUTS[workout].target
+    w_energy = W_ENERGY * WORKOUTS[workout].smoothness
     e, b, br, ar, bk, sec = (x.tolist() for x in (energy, bpm, bright, artist, bucket, seconds))
     mean_sec = float(np.mean(seconds))
 
@@ -59,12 +52,12 @@ def order(
         total, t = 0.0, 0.0
         for pos, i in enumerate(perm):
             mid_t = t + sec[i] / 2
-            target = arc_target(mid_t / swim_seconds, lo, mid, hi) if swim_seconds else mid
+            target = shape(mid_t / swim_seconds, lo, mid, hi) if swim_seconds else mid
             total += W_ARC * (e[i] - target) ** 2 * sec[i] / mean_sec
             t += sec[i]
             if pos:
                 j = perm[pos - 1]
-                total += W_ENERGY * abs(e[i] - e[j]) + W_TEMPO * tempo_gap(b[i], b[j])
+                total += w_energy * abs(e[i] - e[j]) + W_TEMPO * tempo_gap(b[i], b[j])
                 total += W_BRIGHT * abs(br[i] - br[j]) + (W_ARTIST if ar[i] == ar[j] else 0.0)
                 if pos > 1 and bk[i] == bk[j] == bk[perm[pos - 2]]:
                     total += W_RUN

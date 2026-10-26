@@ -122,14 +122,8 @@ def analyse_file(path: Path, duration: float, tag_bpm: float | None = None, run:
     return analyse_samples(decode(path, duration, run), tag_bpm)
 
 
-SCHEMA = """CREATE TABLE IF NOT EXISTS features_v3(
-  path TEXT PRIMARY KEY, mtime REAL, bpm REAL, loudness REAL, onset REAL, pulse REAL, energy REAL,
-  bright REAL, bass REAL)"""
-
-
 def cached_features(db, track, analyse: Callable[..., Features] = analyse_file) -> Features:
     """Per-file cache keyed on path + mtime; re-analyses only changed files."""
-    db.execute(SCHEMA)
     path = Path(track.path)
     mtime = path.stat().st_mtime
     row = db.execute("SELECT * FROM features_v3 WHERE path=? AND mtime=?", (str(path), mtime)).fetchone()

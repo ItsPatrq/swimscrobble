@@ -9,19 +9,17 @@ import json
 import shutil
 from pathlib import Path
 
+from . import audio, history
 from .config import Config
 from .library import Track
+from .planner import staged_name
 
 
 def _session(db):
-    row = db.execute("SELECT * FROM sessions WHERE status='planned' ORDER BY id DESC LIMIT 1").fetchone()
+    row = history.pending_session(db)
     if row is None:
         raise ValueError("no staged session: reroll first")
     return row, json.loads(row["manifest"])
-
-
-def staged_name(position: int, source: str) -> str:
-    return f"{position:03d} - {Path(source).name}"
 
 
 def _apply(cfg: Config, db, row, manifest: dict, tracks: list[dict], copy: dict[str, Path] | None = None) -> dict:
@@ -42,11 +40,11 @@ def _apply(cfg: Config, db, row, manifest: dict, tracks: list[dict], copy: dict[
     # phase 2: final names
     for pos, t in enumerate(tracks, 1):
         final = staged_name(pos, t["file"])
-        src = parked.pop(t["staged"], None) if t["staged"] in parked else None
+        src = parked.pop(t["staged"], None)
         if src is not None:
             src.rename(stage / final)
         elif copy and t["file"] in copy:
-            shutil.copy2(copy[t["file"]], stage / final)
+            shutil.copy2(audio.leveller(cfg.loudness)(copy[t["file"]]), stage / final)
         t["position"], t["staged"] = pos, final
     for leftover in parked.values():  # removed tracks
         leftover.unlink(missing_ok=True)

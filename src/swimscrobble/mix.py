@@ -17,12 +17,15 @@ from .dpp import greedy_dpp
 from .energy import Features
 from .generator import Candidate, Key
 from .library import Track
-from .planner import PlannedTrack, dedupe, key_of
+from .planner import NEW_TO_YOU, PlannedTrack, dedupe, key_of
 from .sequence import order
+from .workouts import WORKOUTS
 
 DEFAULT_QUOTAS = {"obsession": 0.40, "mid": 0.15, "fresh": 0.15, "lost": 0.10, "rec": 0.20}
 BUCKET_ALIASES = {"playlist": "obsession", "top": "obsession", "loved": "obsession", "similar": "rec"}
 UNKNOWN_TASTE_WEIGHT = 0.5  # only used when there is no taste pool at all
+SKIP_DAMP, ARTIST_SKIP_DAMP = 0.5, 0.85  # quality factor per skip of the track / of any track by the artist
+RETIRE_SKIPS = 3
 ARTIST_WEIGHT = 1.0  # strength of the same-artist term in the similarity kernel (audio terms total 1.0)
 
 
@@ -65,9 +68,15 @@ def build_mix(
     recent: set[Key] | None = None,
     max_per_artist: int = 4,
     variety: float = 2.5,
+    workout: str = "steady",
+    skips: dict[Key, int] | None = None,
+    artist_skips: dict[str, int] | None = None,
 ) -> list[PlannedTrack]:
+    """`skips` / `artist_skips`: how often you skipped a track / an artist on a swim. Each skip makes it rarer;
+    a track skipped RETIRE_SKIPS times is not picked again."""
     rng = np.random.default_rng(seed)
     plays, recent = plays or {}, recent or set()
+    skips, artist_skips = skips or {}, artist_skips or {}
     cmap = {(c.artist.casefold(), c.title.casefold()): c for c in candidates}
     quotas = dict(quotas or DEFAULT_QUOTAS)
 
@@ -78,6 +87,8 @@ def build_mix(
         c = cmap.get(k)
         if cmap and c is None:
             continue  # a taste pool exists: only tracks it lists are eligible
+        if skips.get(k, 0) >= RETIRE_SKIPS:
+            continue
         f = feature_of(t)
         if f.energy < min_energy:
             continue
@@ -104,14 +115,15 @@ def build_mix(
             taste /= max(np.linalg.norm(taste), 1e-9)
             unit = audio / np.maximum(np.linalg.norm(audio, axis=1, keepdims=True), 1e-9)
             sim = unit @ taste
-            new = np.array([b in ("fresh", "rec") for b in buckets])
+            new = np.array([b in NEW_TO_YOU for b in buckets])
             rel = np.where(new, rel * (1.0 + 0.4 * sim), rel)
         swum = np.array([plays.get(key_of(t), 0) for t in tracks])
-        q = np.clip(rel, 0.1, 1.5) ** 0.8 * energy**1.5 / np.sqrt(1 + swum)
+        skipped = np.array([SKIP_DAMP ** skips.get(key_of(t), 0) * ARTIST_SKIP_DAMP ** artist_skips.get(t.artist.casefold(), 0)
+                            for t in tracks])
+        q = np.clip(rel, 0.1, 1.5) ** 0.8 * energy ** WORKOUTS[workout].energy_pull / np.sqrt(1 + swum) * skipped
         return tracks, feats, audio, artist_ids, q, energy, buckets
 
     budget = minutes * 60
-    chosen_idx: list[int] = []
     pool_items = rows + stale if len(rows) < 2 else rows
     tracks, feats, audio, artist_ids, q, energy, buckets = prepare(pool_items)
     dur = np.array([t.duration for t in tracks])
@@ -150,7 +162,7 @@ def build_mix(
     seq = order(
         energy[sel], np.array([feats[i].bpm for i in sel]), np.array([feats[i].bright for i in sel]),
         artist_ids[sel], np.array([bk_names.index(buckets[i]) for i in sel]), dur[sel],
-        swim_minutes * 60, rng,
+        swim_minutes * 60, rng, workout=workout,
     )
     return [PlannedTrack(n + 1, tracks[sel[i]], buckets[sel[i]], round(float(energy[sel[i]]), 2))
             for n, i in enumerate(seq)]

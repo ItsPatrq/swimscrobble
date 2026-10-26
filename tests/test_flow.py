@@ -8,6 +8,7 @@ from swimscrobble import flow, history, launchd
 from swimscrobble.config import Config
 from swimscrobble.energy import Features
 from swimscrobble.library import Track
+from swimscrobble.pocketcasts import PodcastReport
 
 
 @pytest.fixture
@@ -22,7 +23,7 @@ def env(tmp_path, monkeypatch):
         lib.append(Track(f, f"Artist{i % 5}", f"Song{i}", "Alb", 300))
     vol = tmp_path / "Volumes"
     (vol / "SWIM PRO" / "Music").mkdir(parents=True)
-    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60)
+    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60, loudness_target=0)  # fake audio
     db = history.connect(tmp_path / "h.db")
     return cfg, db, lib, vol
 
@@ -107,6 +108,15 @@ def test_podcast_failure_does_not_block_staging(env):
     assert any("podcasts failed" in l for l in log) and any("staged session" in l for l in log)
 
 
+def test_podcasts_sync_even_when_the_previous_session_blocks_staging(env):
+    cfg, db, lib, _ = env
+    run(cfg, db, lib)
+    flow._set_handled(False)
+    rep = PodcastReport(downloaded=["a", "b"], on_device=2)
+    log, _ = run(cfg, db, lib, now=datetime(2026, 10, 25, 11, 0), podcast_sync=lambda: rep)
+    assert log == ["podcasts: 2 podcasts (2 new)", "awaiting confirmation"]
+
+
 def test_launchd_plist_and_install(tmp_path):
     data = plistlib.loads(launchd.build_plist("/py", "/Volumes", tmp_path))
     assert data["WatchPaths"] == ["/Volumes"] and data["ProgramArguments"][-1] == "on-connect"
@@ -120,7 +130,7 @@ def test_launchd_plist_and_install(tmp_path):
 def test_pool_sync_runs_and_failure_does_not_block(env):
     cfg, db, lib, _ = env
     log, _ = run(cfg, db, lib, pool_sync=lambda: "+3 -0")
-    assert "pool: +3 -0" in log and any("staged session" in x for x in log)
+    assert "pool sync: +3 -0" in log and any("staged session" in x for x in log)
     flow._set_handled(False)
     def bad(): raise RuntimeError("lastfm down")
     cfg.auto_submit = True  # settle the first session so the second connection reaches the pool step
@@ -166,3 +176,40 @@ def test_discard_pending(env):
     run(cfg, db, lib)
     sid = history.discard_pending(db)
     assert sid and history.pending_session(db) is None and history.discard_pending(db) is None
+
+
+def test_garmin_swim_scrobbles_its_real_start_and_length_without_asking(env):
+    from swimscrobble.garmin import Swim
+
+    cfg, db, lib, _ = env  # auto_submit is off: the Garmin swim alone is enough
+    run(cfg, db, lib, now=datetime(2026, 10, 25, 7, 0))
+    flow._set_handled(False)
+    sent, windows = [], []
+    def find(since, until):
+        windows.append((since, until))
+        return Swim(datetime(2026, 10, 25, 8, 15), 30.0, "lap_swimming", 1500)
+    log, msgs = run(cfg, db, lib, now=datetime(2026, 10, 25, 10, 0), find_swim=find,
+                    lastfm_submit=lambda s: (sent.append(s) or len(s)))
+    assert windows == [(datetime(2026, 10, 25, 7, 0), datetime(2026, 10, 25, 10, 0))]
+    assert len(sent[0]) == 6 and sent[0][0].timestamp == datetime(2026, 10, 25, 8, 15)  # 30 min of 5-min tracks
+    assert log[0].startswith("Garmin lap swimming") and "scrobbled 6 tracks" in log[0] and "staged session" in log[-1]
+
+
+def test_no_garmin_swim_or_garmin_down_falls_back_to_asking(env):
+    cfg, db, lib, _ = env
+    run(cfg, db, lib, now=datetime(2026, 10, 25, 7, 0))
+    flow._set_handled(False)
+    log, _ = run(cfg, db, lib, now=datetime(2026, 10, 25, 10, 0), find_swim=lambda a, b: None)
+    assert log == ["awaiting confirmation"]
+    flow._set_handled(False)
+    def down(a, b): raise RuntimeError("401")
+    log, msgs = run(cfg, db, lib, now=datetime(2026, 10, 25, 10, 5), find_swim=down)
+    assert log == ["awaiting confirmation"] and any("Garmin lookup failed" in m for m in msgs)
+
+
+def test_one_notification_sums_up_the_connection(env):
+    cfg, db, lib, _ = env
+    log, msgs = run(cfg, db, lib, podcast_sync=lambda: PodcastReport(downloaded=["x"], on_device=3),
+                    pool_sync=lambda: (_ for _ in ()).throw(RuntimeError("lastfm down")))
+    assert len(msgs) == 1
+    assert msgs[0].startswith("swimscrobble: 3 podcasts (1 new) · pool sync FAILED: lastfm down · staged 24 tracks")

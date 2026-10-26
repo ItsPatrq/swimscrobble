@@ -6,9 +6,30 @@ chosen track a zero-padded position prefix. Alphabetical order == play order.
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from .library import Track
+
+STAGED_RE = re.compile(r"^\d{3} - ")
+
+
+def staged_name(position: int, path: Path | str) -> str:
+    """Device filename: the zero-padded prefix is the play order (matched by STAGED_RE)."""
+    return f"{position:03d} - {Path(path).name}"
+
+
+NEW_TO_YOU = frozenset({"fresh", "rec"})  # buckets of tracks you had not played before: the discoveries
+
+
+def parse_positions(text: str | None) -> set[int]:
+    """'3, 7,12' -> {3, 7, 12}; anything that is not a number is ignored."""
+    return {int(x) for x in (text or "").replace(" ", "").split(",") if x.isdigit()}
+
+
+def fmt_min(seconds: float) -> str:
+    return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
 
 
 @dataclass(frozen=True)
@@ -20,7 +41,7 @@ class PlannedTrack:
 
     @property
     def staged_name(self) -> str:
-        return f"{self.position:03d} - {self.track.path.name}"
+        return staged_name(self.position, self.track.path)
 
 
 def plan_session(

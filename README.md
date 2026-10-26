@@ -42,8 +42,37 @@ plans what will play, you swim, then it scrobbles exactly what was planned.
    (`minutes`, default 60) so it can't run out. Only the first `minutes` of it counts as heard: next time you plug in, those tracks are
    timestamped back from plug-in time and sent to Last.fm (and optionally ListenBrainz). If you swam
    a different length, say so with `--played-minutes`.
-4. **Podcasts**: the first N episodes of your Pocket Casts *Up Next* queue are mirrored to the device's
-   `PocketCast/` folder (not scrobbled).
+   **With Garmin** (`garmin = true`, after `swimscrobble garmin-auth`): the swim your watch recorded between
+   staging and plug-in gives the real start time and length (elapsed, so rests at the wall count), and is
+   scrobbled straight away even with `auto_submit = false` (`garmin_auto_submit`). No swim on Garmin (or Garmin
+   unreachable): the session is parked for confirmation as before. The shell and `scrobble-pending` use it too.
+4. **Podcasts**: the newest episode of each Pocket Casts subscription, unless already played or
+   archived, is mirrored to the device's `PocketCast/` folder (newest first, at most `max_podcasts`; not scrobbled).
+   Runs on every connection, even when the previous session is still awaiting confirmation.
+   The headphones cannot change playback speed, so episodes are re-encoded at `podcast_speed` (default 1.3x,
+   pitch kept) with pauses over 0.6 s cut to 0.3 s (`podcast_trim_silence`): roughly a quarter shorter and smaller.
+   Pocket Casts never learns what you heard on the headphones: tick what you finished in the shell (`o`), or
+   `swimscrobble podcasts --done 1,3`, and those are marked played and replaced by the next sync.
+5. **Loudness**: every staged track is levelled to `loudness_target` LUFS (default -11; two-pass, linear gain, no
+   pumping) so quiet masters stay audible underwater. Originals are untouched; levelled copies are cached in
+   `~/.config/swimscrobble/loudness-cache/` (unused for 60 days: deleted). Tracks already close to the target are
+   copied as they are. The first staging takes a few minutes; later ones only level tracks new to the cache.
+6. **Space**: before staging, the playlist is checked against the free space on the headphones (keeping
+   `space_reserve_mb` free): buffer tracks are dropped from the end until it fits, and if even the swim part does
+   not fit nothing is staged and the notification says so. Podcasts leave room for the next playlist: an episode
+   that would eat into it is skipped (the oldest go first).
+7. **Skips teach the mix**: positions you mark as skipped when scrobbling (shell `c`, or `--skip`) halve that
+   track's chance next time and make the artist a little rarer; a track skipped 3 times is not picked again.
+8. **Discoveries**: after scrobbling in the shell, the new-to-you tracks you heard are listed; tick the ones you
+   liked to love them on Last.fm, and (after `swimscrobble ytm-auth`) add them to your first `ytm_playlist`,
+   which moves them into your obsession bucket sooner.
+9. **Workouts**: the energy curve over the swim. `steady` (warm-up, two surges, taper), `intervals` (3 hard / 3
+   easy blocks), `pyramid` (build to a peak half-way, then down), `easy` (calmer tracks, even and low). Default
+   `workout` in config; per swim with `reroll --workout intervals` or the shell's reroll.
+10. **Recap**: `swimscrobble recap [--days 7]` or shell `v`: swims, hours, distance (Garmin), tracks heard,
+    skips, most swum artists and the discoveries you heard.
+11. **One notification per plug-in**, e.g. `6 podcasts (2 new) · Garmin lap swimming Sat 08:05, 55 min: scrobbled
+    11 tracks · staged 26 tracks, 119 min, 4 new`; anything that failed is in it, in capitals.
 
 ## Install
 
@@ -78,6 +107,14 @@ max_per_artist = 4           # soft cap; the selection already spreads artists
 variety = 2.5                # randomness of the selection
 min_energy = 0.5             # 0..1; raise to cut more mid-tempo tracks
 max_podcasts = 10
+podcast_speed = 1.3          # 1 = original speed
+podcast_trim_silence = true
+loudness_target = -11        # LUFS; 0 = copy files untouched
+garmin = false               # true after `swimscrobble garmin-auth`
+garmin_auto_submit = true    # a swim found on Garmin is scrobbled without asking
+workout = "steady"           # steady | intervals | pyramid | easy
+space_reserve_mb = 200       # always left free on the headphones
+ytm_auth_file = "~/.config/swimscrobble/ytm_browser.json"   # written by `swimscrobble ytm-auth`
 no_repeat_days = 7
 ```
 
@@ -85,18 +122,21 @@ no_repeat_days = 7
 
 | command | what |
 |---|---|
-| `mix [dir] [--playlist-minutes N] [--min-energy X] [--stage DIR]` | the varied energising session (shows energy and bucket per track) |
+| `mix [dir] [--playlist-minutes N] [--min-energy X] [--workout W] [--stage DIR]` | the varied energising session (shows energy and bucket per track) |
 | `plan [dir] --stage DIR` | plain shuffle without taste or energy, for comparison |
 | `scrobble session.json --start ISO [--played-minutes N] [--skip 3,7] [--confirm] [--submit]` | CSV by default; `--submit` sends to Last.fm |
 | `scrobble-pending` | scrobble the last staged session (start inferred from now) |
 | `status` | what is staged, history and pool sizes, what is excluded right now |
-| `reroll [--sync]` | replace the staged playlist on the connected headphones with a fresh one (old session discarded, not scrobbled) |
+| `reroll [--sync] [--workout W]` | replace the staged playlist on the connected headphones with a fresh one (old session discarded, not scrobbled) |
 | `skip` | forget the staged session without scrobbling (you did not swim) |
 | `eval` | replay your Last.fm history and score the models behind the playlist (reproduces docs/ALGORITHM.md) |
+| `recap [--days N]` | swims, time, distance, tracks, skips, discoveries |
+| `ytm-auth` | YouTube Music browser login, only to add liked discoveries to your playlist |
+| `garmin-auth` | one-time Garmin Connect login (email, password, MFA code if enabled); only tokens are stored |
 | `lastfm-auth` | one-time Last.fm authorisation (`LASTFM_API_KEY`/`LASTFM_API_SECRET`) |
 | `playlist [url] [--download]` | list which playlist tracks exist under `music_dir`; `--download` fetches the missing ones |
 | `sync [--download [--yes]] [--fetch-missing N]` | refresh the swim pool: Last.fm 30/60/90-day charts, all-time top/loved, similar tracks, artist and genre top tracks, plus the playlist; optionally offer to download N wanted tracks you don't have yet |
-| `podcasts` | mirror Pocket Casts Up Next (`POCKETCASTS_EMAIL`/`POCKETCASTS_PASSWORD`) |
+| `podcasts [--done 1,3]` | mark finished episodes played, then mirror newest unplayed episode per Pocket Casts subscription (`POCKETCASTS_EMAIL`/`POCKETCASTS_PASSWORD`) |
 | `on-connect` | the automatic flow (settle previous session, podcasts, plan + stage next) |
 | `agent install` | launchd agent that runs `on-connect` when volumes change |
 
@@ -105,7 +145,7 @@ no_repeat_days = 7
 `swimscrobble agent install` registers a launchd agent watching `/Volumes`. On each mount:
 
 - device absent: nothing, and the next connection counts as new
-- device present, first event: settle the previous session, sync podcasts, stage the next session
+- device present, first event: sync podcasts, settle the previous session, stage the next session
 - with `auto_submit = false` (default) the previous session is parked as
   `~/.config/swimscrobble/pending/session-N.csv` with a notification; run `swimscrobble scrobble-pending`
   (use `--played-minutes` / `--skip` to correct it), then re-run `on-connect` to stage the next one.

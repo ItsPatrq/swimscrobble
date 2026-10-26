@@ -7,24 +7,16 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from . import config as cfgmod
 from . import history
-from .library import scan
-from .mix import build_mix
-from .planner import plan_session, total_seconds
+from .library import scan_config
+from .workouts import WORKOUTS
+from .planner import fmt_min, parse_positions, plan_session, total_seconds
 from .scrobble import build_scrobbles, confirm, to_csv
 from .session import played_part, to_manifest
-
-
-def _scan(cfg, folder=None):
-    return scan(Path(folder) if folder else cfg.music_path, exclude=tuple(cfg.exclude_dirs), min_seconds=cfg.min_track_seconds)
-
-
-def _fmt(seconds: float) -> str:
-    return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
 
 
 def notify(msg: str) -> None:
@@ -35,30 +27,21 @@ def notify(msg: str) -> None:
 
 def cmd_plan(a) -> None:
     cfg = cfgmod.load()
-    tracks = _scan(cfg, a.music)
+    tracks = scan_config(cfg, a.music)
     swim = a.minutes or cfg.minutes
     plan = plan_session(tracks, a.playlist_minutes or cfg.playlist_minutes, a.seed, arc=cfg.arc)
     for p in plan:
-        print(f"{p.position:03d}  {_fmt(p.track.duration)}  {p.track.artist} - {p.track.title}")
-    print(f"\n{len(plan)} tracks, {_fmt(total_seconds(plan))}")
+        print(f"{p.position:03d}  {fmt_min(p.track.duration)}  {p.track.artist} - {p.track.title}")
+    print(f"\n{len(plan)} tracks, {fmt_min(total_seconds(plan))}")
     manifest = to_manifest(plan, a.seed, swim)
     Path(a.out).write_text(json.dumps(manifest, indent=2, ensure_ascii=False))
     print(f"manifest: {a.out}")
     if a.stage:
-        import shutil
+        from . import audio
+        from .flow import stage_plan
 
-        dest = Path(a.stage)
-        dest.mkdir(parents=True, exist_ok=True)
-        for p in plan:
-            shutil.copy2(p.track.path, dest / p.staged_name)
-        print(f"staged {len(plan)} files into {dest} (originals untouched)")
-
-
-def _scrobbles_from_args(manifest, a):
-    """Skipped tracks never played; the swim length (or --played-minutes) bounds what was heard."""
-    skipped = {int(x) for x in a.skip.split(",")} if a.skip else set()
-    plan, _ = played_part(manifest, a.played_minutes, skipped)
-    return build_scrobbles(plan, datetime.fromisoformat(a.start))
+        stage_plan(plan, Path(a.stage), audio.leveller(cfg.loudness))
+        print(f"staged {len(plan)} files into {a.stage} (originals untouched)")
 
 
 def _deliver(scrobbles, a, cfg) -> bool:
@@ -66,15 +49,13 @@ def _deliver(scrobbles, a, cfg) -> bool:
         print("aborted")
         return False
     if a.submit:
-        from . import lastfm, listenbrainz
+        from . import flow
 
-        stale = lastfm.check_window(scrobbles)
-        if stale:
-            raise SystemExit(f"{len(stale)} scrobbles outside Last.fm's 14-day window; fix --start")
-        n = lastfm.submit(scrobbles, lastfm.load_session_key())
-        print(f"Last.fm accepted {n}/{len(scrobbles)}")
-        if cfg.listenbrainz or a.listenbrainz:
-            print(f"ListenBrainz sent {listenbrainz.submit(scrobbles)}")
+        try:
+            n = flow.send_scrobbles(scrobbles, cfg, listenbrainz_too=a.listenbrainz)
+        except ValueError as e:
+            raise SystemExit(f"{e}; fix --start") from None
+        print(flow.describe_sent(n, scrobbles, cfg, a.listenbrainz))
         return True
     text = to_csv(scrobbles)
     if a.out:
@@ -88,28 +69,60 @@ def _deliver(scrobbles, a, cfg) -> bool:
 def cmd_scrobble(a) -> None:
     cfg = cfgmod.load()
     manifest = json.loads(Path(a.manifest).read_text())
-    _deliver(_scrobbles_from_args(manifest, a), a, cfg)
+    plan, _ = played_part(manifest, a.played_minutes, parse_positions(a.skip))
+    _deliver(build_scrobbles(plan, datetime.fromisoformat(a.start)), a, cfg)
 
 
 def cmd_scrobble_pending(a) -> None:
+    from . import flow, garmin
+
     cfg = cfgmod.load()
     db = history.connect()
     row = history.pending_session(db)
     if not row:
         raise SystemExit("no pending session")
-    manifest = json.loads(row["manifest"])
-    skipped = {int(x) for x in a.skip.split(",")} if a.skip else set()
-    _, listened = played_part(manifest, a.played_minutes, skipped)
-    a.start = a.start or (
-        datetime.now() - timedelta(minutes=cfg.session_offset_minutes) - timedelta(seconds=listened)
-    ).isoformat(timespec="seconds")
-    scrobbles = _scrobbles_from_args(manifest, a)
-    if _deliver(scrobbles, a, cfg):
-        history.mark_scrobbled(db, row["id"], [(s.artist, s.title, s.timestamp.timestamp()) for s in scrobbles])
-        from . import flow
-
+    now = datetime.now()
+    # what you pass wins; otherwise the Garmin swim, otherwise the plan
+    swim = None if (a.start or a.played_minutes) else flow.lookup_swim(garmin.finder(cfg), row, now, print)
+    if swim:
+        print(f"Garmin: {swim.describe()}")
+    settled = flow.settle(json.loads(row["manifest"]), cfg, now, swim, a.played_minutes, parse_positions(a.skip),
+                          datetime.fromisoformat(a.start) if a.start else None)
+    if _deliver(settled.scrobbles, a, cfg):
+        flow.record(db, row, settled)
         flow._set_handled(False)  # lets `on-connect` stage the next session without re-plugging
         print("settled; run `swimscrobble on-connect` to stage the next session")
+
+
+def cmd_garmin_auth(a) -> None:
+    import getpass
+
+    from . import garmin
+
+    g = garmin.client(ask=input, ask_secret=getpass.getpass)
+    print(f"saved Garmin tokens for {g.get_full_name() or 'your account'}")
+    if not cfgmod.load().garmin:
+        print("now set `garmin = true` in config.toml so swims are read from Garmin")
+
+
+def cmd_ytm_auth(a) -> None:
+    """Browser auth for YouTube Music, needed only to add liked discoveries to your playlist."""
+    import ytmusicapi
+
+    cfg = cfgmod.load()
+    path = cfg.ytm_auth_file_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print("In music.youtube.com (logged in): DevTools > Network > any POST to /browse > copy the request headers,")
+    print("paste them here, then press Ctrl-D.")
+    ytmusicapi.setup(filepath=str(path))
+    path.chmod(0o600)
+    print(f"saved {path}")
+
+
+def cmd_recap(a) -> None:
+    from . import stats
+
+    print("\n".join(stats.recap(history.connect(), a.days).lines()))
 
 
 def cmd_lastfm_auth(a) -> None:
@@ -128,7 +141,7 @@ def cmd_playlist(a) -> None:
     url = a.url or (cfg.playlists[0] if cfg.playlists else "")
     if not url:
         raise SystemExit("pass a playlist URL or set ytm_playlist in config")
-    idx = LocalIndex(_scan(cfg))
+    idx = LocalIndex(scan_config(cfg))
     missing = []
     for e in ytm.fetch(url, cookies=cfg.cookies_path):
         t = idx.find(e.artist, e.title, e.duration)
@@ -168,7 +181,7 @@ def run_sync(cfg, db, size: int = 1000, download: str | bool = False):
         fetch_wishes=(lambda w: acquire.fetch_wishes(cfg, db, w, cfg.auto_fetch, ask=input if download == "ask" else None))
         if (download and cfg.auto_fetch) else None,
     )
-    db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('last_sync', ?)", (str(time.time()),))
+    history.set_meta(db, "last_sync", time.time())
     db.commit()
     return report
 
@@ -203,37 +216,26 @@ def cmd_sync(a) -> None:
 
 
 def cmd_mix(a) -> None:
-    from . import flow
-    from .energy import cached_features
+    from . import audio, flow
 
     cfg = cfgmod.load()
     db = history.connect()
     swim = a.minutes or cfg.minutes
-    library = _scan(cfg, a.music)
-    plan = build_mix(
-        library, flow.pool_candidates(db), lambda t: cached_features(db, t),
-        minutes=a.playlist_minutes or cfg.playlist_minutes, swim_minutes=swim, seed=a.seed, quotas=cfg.mix_weights,
-        min_energy=a.min_energy or cfg.min_energy, max_per_artist=cfg.max_per_artist, variety=cfg.variety,
-        plays=history.play_counts(db), recent=history.recent_plays(db, cfg.no_repeat_days),
-    )
+    plan = flow.build_plan(db, cfg, scan_config(cfg, a.music), a.seed, workout=a.workout,
+                           minutes=a.playlist_minutes, swim_minutes=swim, min_energy=a.min_energy)
     n_scrobbles = db.execute("SELECT COUNT(*) c FROM scrobbles").fetchone()["c"]
     if cfg.lastfm_user and not n_scrobbles:
         print("! no Last.fm history synced yet: every track counts as discovery. Run `swimscrobble sync` first.\n")
     elif db.execute("SELECT 1 FROM pool WHERE retired=0 AND source IN ('top','loved','playlist','similar') LIMIT 1").fetchone():
         print("! the pool was built by an older version: run `swimscrobble sync` to rebuild it.\n")
     for p in plan:
-        print(f"{p.position:03d}  {_fmt(p.track.duration)}  e={p.energy:.2f}  {p.source:9}  {p.track.artist} - {p.track.title}")
+        print(f"{p.position:03d}  {fmt_min(p.track.duration)}  e={p.energy:.2f}  {p.source:9}  {p.track.artist} - {p.track.title}")
     mixes = Counter(p.source for p in plan)
-    print(f"\n{len(plan)} tracks, {_fmt(total_seconds(plan))}  " + "  ".join(f"{b}={n}" for b, n in mixes.most_common()))
+    print(f"\n{len(plan)} tracks, {fmt_min(total_seconds(plan))}  " + "  ".join(f"{b}={n}" for b, n in mixes.most_common()))
     Path(a.out).write_text(json.dumps(to_manifest(plan, a.seed, swim), indent=2, ensure_ascii=False))
     if a.stage:
-        import shutil
-
-        dest = Path(a.stage)
-        dest.mkdir(parents=True, exist_ok=True)
-        for p in plan:
-            shutil.copy2(p.track.path, dest / p.staged_name)
-        print(f"staged {len(plan)} files into {dest}")
+        flow.stage_plan(plan, Path(a.stage), audio.leveller(cfg.loudness))
+        print(f"staged {len(plan)} files into {a.stage}")
 
 
 def cmd_eval(a) -> None:
@@ -276,7 +278,7 @@ def cmd_reroll(a) -> None:
         rep = run_sync(cfg, db, download=False)
         print(f"pool refreshed: +{len(rep.pool.added)} -{len(rep.pool.retired)}")
     try:
-        m = flow.reroll(cfg, db, a.seed)
+        m = flow.reroll(cfg, db, a.seed, workout=a.workout)
     except RuntimeError as e:
         raise SystemExit(str(e)) from None
     flow._set_handled(True)
@@ -325,21 +327,33 @@ def cmd_podcasts(a) -> None:
 
     cfg = cfgmod.load()
     db = history.connect()
-    token = pocketcasts.saved_token() or pocketcasts.login()
     dest = Path(a.dest) if a.dest else cfg.podcast_path
-    print(pocketcasts.sync_queue(pocketcasts.up_next(token), dest, db, cfg.max_podcasts))
+    if a.done:
+        done = [e for i, e in enumerate(pocketcasts.on_device(db), 1) if i in parse_positions(a.done)]
+        pocketcasts.mark_played(done)
+        print(pocketcasts.describe_marked(done))
+    print(pocketcasts.sync_latest(dest, db, cfg.max_podcasts, speed=cfg.podcast_speed,
+                                  trim_silence=cfg.podcast_trim_silence))
+
+
+def podcast_sync(cfg, db, only_if_logged_in: bool = True):
+    """The on-connect podcast step, or None when Pocket Casts was never set up (automatic runs must not prompt)."""
+    from . import pocketcasts
+    from .flow import music_reserve_mb
+
+    if only_if_logged_in and not pocketcasts.saved_token():
+        return None
+    return lambda: pocketcasts.sync_latest(cfg.device_path / cfg.device_podcast_subdir, db, cfg.max_podcasts,
+                                           speed=cfg.podcast_speed, trim_silence=cfg.podcast_trim_silence,
+                                           reserve_mb=music_reserve_mb(cfg, db))
 
 
 def cmd_on_connect(a) -> None:
-    from . import flow, pocketcasts
+    from . import flow, garmin
 
     cfg = cfgmod.load()
     db = history.connect()
-    sync = None
-    if pocketcasts.saved_token():
-        sync = lambda: pocketcasts.sync_queue(  # noqa: E731
-            pocketcasts.up_next(pocketcasts.saved_token()),
-            cfg.device_path / cfg.device_podcast_subdir, db, cfg.max_podcasts)
+
     def pool_sync():
         if not (cfg.lastfm_user or cfg.playlists):
             return "skipped (no lastfm_user / ytm_playlist configured)"
@@ -347,7 +361,8 @@ def cmd_on_connect(a) -> None:
         left = len(rep.playlist_missing)
         return f"+{len(rep.pool.added)} -{len(rep.pool.retired)}, {left} playlist tracks still missing"
 
-    for line in flow.on_connect(cfg, db, notify=notify, podcast_sync=sync, pool_sync=pool_sync):
+    for line in flow.on_connect(cfg, db, notify=notify, podcast_sync=podcast_sync(cfg, db), pool_sync=pool_sync,
+                                find_swim=garmin.finder(cfg)):
         print(line)
 
 
@@ -398,6 +413,7 @@ def main(argv=None) -> None:
     mx.add_argument("--playlist-minutes", type=float, help="staged playlist length (default 120)")
     mx.add_argument("--seed", type=int)
     mx.add_argument("--min-energy", type=float)
+    mx.add_argument("--workout", choices=sorted(WORKOUTS))
     mx.add_argument("--out", default="session.json")
     mx.add_argument("--stage")
     mx.set_defaults(func=cmd_mix)
@@ -407,6 +423,7 @@ def main(argv=None) -> None:
     rr = sub.add_parser("reroll", help="replace the staged playlist with a fresh one")
     rr.add_argument("--seed", type=int)
     rr.add_argument("--sync", action="store_true", help="refresh the pool from Last.fm first")
+    rr.add_argument("--workout", choices=sorted(WORKOUTS), help="energy curve for this swim (default: config)")
     rr.set_defaults(func=cmd_reroll)
 
     sh = sub.add_parser("shell", help="interactive shell (also: run with no arguments)")
@@ -418,6 +435,12 @@ def main(argv=None) -> None:
     sub.add_parser("eval", help="replay your Last.fm history to evaluate the scoring models").set_defaults(func=cmd_eval)
 
     sub.add_parser("lastfm-auth", help="authorise on Last.fm").set_defaults(func=cmd_lastfm_auth)
+    sub.add_parser("ytm-auth", help="YouTube Music browser auth (adds liked discoveries to your playlist)").set_defaults(
+        func=cmd_ytm_auth)
+    rc = sub.add_parser("recap", help="swims, minutes, discoveries over the last days")
+    rc.add_argument("--days", type=int, default=7)
+    rc.set_defaults(func=cmd_recap)
+    sub.add_parser("garmin-auth", help="log in to Garmin Connect (swim times)").set_defaults(func=cmd_garmin_auth)
 
     pl = sub.add_parser("playlist", help="match a YouTube Music playlist to local files")
     pl.add_argument("url", nargs="?")
@@ -432,8 +455,9 @@ def main(argv=None) -> None:
                     help="offer to download up to N wanted-but-missing tracks")
     sy.set_defaults(func=cmd_sync)
 
-    po = sub.add_parser("podcasts", help="mirror the Pocket Casts Up Next queue")
+    po = sub.add_parser("podcasts", help="mirror the newest unplayed episode of each Pocket Casts subscription")
     po.add_argument("--dest")
+    po.add_argument("--done", metavar="1,3", help="mark these episodes (number on the headphones) played first")
     po.set_defaults(func=cmd_podcasts)
 
     sub.add_parser("on-connect", help="the automatic flow (run by launchd)").set_defaults(func=cmd_on_connect)

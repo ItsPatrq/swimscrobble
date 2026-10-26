@@ -118,8 +118,9 @@ class KeyUI:
         r = self._loop(render, n, on_key)
         return None if r == "__cancel__" else r
 
-    def multiselect(self, rows: list[str], title: str = "") -> list[int] | None:
-        """Checklist: Space toggles, a = all/none, Enter confirms (returns checked indexes), Esc cancels."""
+    def multiselect(self, rows: list[str], title: str = "", allow_none: bool = False) -> list[int] | None:
+        """Checklist: Space toggles, a = all/none, Enter confirms (returns checked indexes), Esc cancels.
+        Enter with nothing ticked acts on the highlighted row, or returns [] with `allow_none`."""
         checked: set[int] = set()
 
         def render(idx):
@@ -136,7 +137,7 @@ class KeyUI:
             elif key == "a":
                 checked.clear() if len(checked) == len(rows) else checked.update(range(len(rows)))
             elif key == "enter":
-                return idx, sorted(checked) if checked else [idx]  # nothing ticked: act on the highlighted row
+                return idx, sorted(checked) if checked or allow_none else [idx]
             elif key == "esc":
                 return idx, "__cancel__"
             return idx, None

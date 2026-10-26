@@ -9,7 +9,7 @@ from . import affinity, history, poolsync
 from .acquire import fetched_wishes
 from .buckets import assign
 from .config import Config
-from .library import Track, scan
+from .library import Track, scan_config
 from .link import LocalIndex
 from .taste import Taste
 from .ytm import Entry
@@ -41,9 +41,7 @@ def sync_library(
     `download` receives the playlist entries missing locally; the library is rescanned afterwards.
     Pool keys are always the *local* files' artist/title, so later lookups are exact.
     """
-    load = library_loader or (
-        lambda: scan(cfg.music_path, exclude=tuple(cfg.exclude_dirs), min_seconds=cfg.min_track_seconds)
-    )
+    load = library_loader or (lambda: scan_config(cfg))
     library = load()
     entries = [e for url in cfg.playlists for e in fetch_playlist(url)]
     idx = LocalIndex(library)
@@ -59,6 +57,17 @@ def sync_library(
     key = lambda t: (t.artist.casefold(), t.title.casefold())  # noqa: E731
     when = now if now is not None else time.time()
 
+    # history and taste depend only on Last.fm, not on the library: computed once even if judged twice
+    taste, tracks, artists = None, {}, {}  # no history: everything is "discovery"
+    if cfg.lastfm_user:
+        if history_sync:
+            history_sync()
+        tracks, artists = affinity.compute(db, when)
+        recent = sorted((kv for kv in tracks.items() if kv[1].now > 0.5), key=lambda kv: -kv[1].now)
+        hot = sorted((kv for kv in artists.items() if kv[1].now > 0.5), key=lambda kv: -kv[1].now)
+        if taste_fetch:
+            taste = taste_fetch(cfg.lastfm_user, [k for k, _ in recent[:10]], [a for a, _ in hot])
+
     def judge():
         """Pool first (the library folder, or just the playlist tracks), then check each against the history."""
         idx = LocalIndex(library)
@@ -67,20 +76,8 @@ def sync_library(
             pool = {key(t) for e in entries if (t := idx.find(e.artist, e.title, e.duration))}
             # tracks fetched from the wishlist belong to the pool too, whether or not they are in a playlist
             pool |= {key(t) for a, ti in fetched_wishes(db) if (t := idx.find(a, ti))}
-        taste = None
-        if cfg.lastfm_user:
-            if history_sync and not synced:
-                history_sync()
-                synced.append(1)
-            tracks, artists = affinity.compute(db, when)
-            recent = sorted((kv for kv in tracks.items() if kv[1].now > 0.5), key=lambda kv: -kv[1].now)
-            hot = sorted((kv for kv in artists.items() if kv[1].now > 0.5), key=lambda kv: -kv[1].now)
-            if taste_fetch:
-                taste = taste_fetch(cfg.lastfm_user, [k for k, _ in recent[:10]], [a for a, _ in hot])
-            return assign(taste, tracks, artists, library, pool, idx, when)
-        return assign(None, {}, {}, library, pool, idx, when)  # no history: everything is "discovery"
+        return assign(taste, tracks, artists, library, pool, idx, when)
 
-    synced: list[int] = []
     owned, wanted = judge()
     if wanted and fetch_wishes and fetch_wishes(wanted):
         library = load()  # new files arrived: rescan and judge again

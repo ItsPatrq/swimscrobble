@@ -68,3 +68,9 @@ def scan(
         if track and track.duration >= min_seconds:
             tracks.append(track)
     return tracks
+
+
+def scan_config(cfg, folder: Path | str | None = None) -> list[Track]:
+    """`scan` with the configured library folder, excludes and minimum length."""
+    return scan(Path(folder) if folder else cfg.music_path, exclude=tuple(cfg.exclude_dirs),
+                min_seconds=cfg.min_track_seconds)

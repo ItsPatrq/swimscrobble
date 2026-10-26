@@ -2,21 +2,19 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 import urllib.parse
-import urllib.request
-from pathlib import Path
 from typing import Callable
 
-from .config import secret
+from .config import read_json, secret, write_private_json
+from .net import request_json
 from .scrobble import Scrobble
 
 API_URL = "https://ws.audioscrobbler.com/2.0/"
 AUTH_URL = "https://www.last.fm/api/auth/"
 MAX_AGE_SECONDS = 14 * 24 * 3600
 BATCH = 50
-SESSION_FILE = Path.home() / ".config" / "swimscrobble" / "lastfm.json"
+SESSION_FILE = "lastfm.json"  # in config_dir()
 
 Transport = Callable[[dict], dict]
 
@@ -28,19 +26,20 @@ def sign(params: dict, secret: str) -> str:
 
 
 def http_post(params: dict) -> dict:
-    data = urllib.parse.urlencode(params).encode()
-    with urllib.request.urlopen(urllib.request.Request(API_URL, data=data), timeout=30) as r:
-        return json.load(r)
+    return request_json(API_URL, urllib.parse.urlencode(params).encode())
+
+
+def check(resp: dict) -> dict:
+    if "error" in resp:
+        raise RuntimeError(f"Last.fm error {resp['error']}: {resp.get('message')}")
+    return resp
 
 
 def _call(method: str, params: dict, key: str, secret: str, transport: Transport) -> dict:
     body = {**params, "method": method, "api_key": key}
     body["api_sig"] = sign(body, secret)
     body["format"] = "json"
-    resp = transport(body)
-    if "error" in resp:
-        raise RuntimeError(f"Last.fm error {resp['error']}: {resp.get('message')}")
-    return resp
+    return check(transport(body))
 
 
 def credentials() -> tuple[str, str]:
@@ -56,23 +55,26 @@ def authenticate(transport: Transport = http_post, wait: Callable[[str], None] =
     token = _call("auth.getToken", {}, key, secret, transport)["token"]
     wait(f"Open {AUTH_URL}?api_key={key}&token={token} , approve, then press Enter: ")
     sk = _call("auth.getSession", {"token": token}, key, secret, transport)["session"]["key"]
-    SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps({"session_key": sk}))
-    SESSION_FILE.chmod(0o600)
+    write_private_json(SESSION_FILE, {"session_key": sk})
     return sk
 
 
 def load_session_key() -> str:
-    try:
-        return json.loads(SESSION_FILE.read_text())["session_key"]
-    except FileNotFoundError:
-        raise SystemExit("not authenticated; run: swimscrobble lastfm-auth") from None
+    saved = read_json(SESSION_FILE)
+    if not saved:
+        raise SystemExit("not authenticated; run: swimscrobble lastfm-auth")
+    return saved["session_key"]
 
 
 def check_window(scrobbles: list[Scrobble], now: float | None = None) -> list[Scrobble]:
     """Return scrobbles Last.fm would reject (older than 14 days or in the future)."""
     now = now if now is not None else time.time()
     return [s for s in scrobbles if not (now - MAX_AGE_SECONDS <= s.timestamp.timestamp() <= now)]
+
+
+def love(artist: str, title: str, session_key: str, transport: Transport = http_post) -> None:
+    key, secret = credentials()
+    _call("track.love", {"artist": artist, "track": title, "sk": session_key}, key, secret, transport)
 
 
 def submit(

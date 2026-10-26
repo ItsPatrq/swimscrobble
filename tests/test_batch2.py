@@ -105,17 +105,46 @@ def test_pocketcasts_queue_sync(tmp_path):
     got = []
     def dl(url, dest): got.append(url); dest.write_bytes(b"x")
     dest = tmp_path / "dev"
-    r = pocketcasts.sync_queue(eps, dest, db, max_episodes=2, download=dl)
+    r = pocketcasts.sync_queue(eps, dest, db, max_episodes=2, fetcher=dl)
     assert sorted(p.name for p in dest.iterdir()) == ["01 - Ep 0.mp3", "02 - Ep 1.mp3"] and len(got) == 2
     # queue changes: first episode finished, order shifts
-    r = pocketcasts.sync_queue(eps[1:], dest, db, max_episodes=2, download=dl)
+    r = pocketcasts.sync_queue(eps[1:], dest, db, max_episodes=2, fetcher=dl)
     assert sorted(p.name for p in dest.iterdir()) == ["01 - Ep 1.mp3", "02 - Ep 2.mp3"]
-    assert r["removed"] == ["01 - Ep 0.mp3"] and r["renamed"] == ["01 - Ep 1.mp3"] and len(got) == 3
+    assert r.removed == ["01 - Ep 0.mp3"] and r.renamed == ["01 - Ep 1.mp3"] and len(got) == 3
 
 
-def test_pocketcasts_up_next_normalises(monkeypatch, tmp_path):
-    t = lambda path, body, tok: {"episodes": {"u1": {"title": "a", "url": "https://x/a.mp3"}, "u2": {"title": "b"}}}
-    assert [e["uuid"] for e in pocketcasts.up_next("tok", t)] == ["u1"]
+def test_pocketcasts_failed_download_skips_only_that_episode(tmp_path):
+    db = history.connect(tmp_path / "h.db")
+    eps = [{"uuid": f"u{i}", "title": f"Ep {i}", "url": f"https://x/{i}.mp3"} for i in range(3)]
+    def dl(url, dest):
+        if url.endswith("1.mp3"):
+            raise RuntimeError("HTTP Error 403: Forbidden")
+        dest.write_bytes(b"x")
+    dest = tmp_path / "dev"
+    r = pocketcasts.sync_queue(eps, dest, db, fetcher=dl)
+    assert sorted(p.name for p in dest.iterdir()) == ["01 - Ep 0.mp3", "03 - Ep 2.mp3"]
+    assert len(r.failed) == 1 and "403" in r.failed[0]
+    assert "u1" not in {row["uuid"] for row in db.execute("SELECT uuid FROM podcasts")}  # retried next time
+
+
+def test_pocketcasts_latest_unplayed_per_subscription():
+    subs = [
+        {"uuid": "old", "lastEpisodeUuid": "e-old", "lastEpisodePublished": "2026-10-01T00:00:00Z", "lastEpisodePlayingStatus": 1},
+        {"uuid": "new", "lastEpisodeUuid": "e-new", "lastEpisodePublished": "2026-10-20T00:00:00Z", "lastEpisodePlayingStatus": 2},
+        {"uuid": "done", "lastEpisodeUuid": "e-done", "lastEpisodePublished": "2026-10-24T00:00:00Z", "lastEpisodePlayingStatus": 3},
+        {"uuid": "arch", "lastEpisodeUuid": "e-arch", "lastEpisodePublished": "2026-10-23T00:00:00Z", "lastEpisodeArchived": True},
+        {"uuid": "mid", "lastEpisodeUuid": "e-mid", "lastEpisodePublished": "2026-10-10T00:00:00Z", "lastEpisodePlayingStatus": 1},
+    ]
+    calls = []
+    def t(path, body, tok):
+        calls.append(path)
+        if path == "/user/podcast/list":
+            return {"podcasts": subs}
+        return {"uuid": body["uuid"], "title": body["uuid"], "url": f"https://x/{body['uuid']}.mp3"}
+    assert [e["uuid"] for e in pocketcasts.latest_unplayed("tok", 10, t)] == ["e-new", "e-mid", "e-old"]
+    calls.clear()
+    assert [e["uuid"] for e in pocketcasts.latest_unplayed("tok", 2, t)] == ["e-new", "e-mid"]
+    assert calls.count("/user/episode") == 2  # never fetches past the cap
 
 
 def test_pocketcasts_login_saves_token_private(monkeypatch, tmp_path):

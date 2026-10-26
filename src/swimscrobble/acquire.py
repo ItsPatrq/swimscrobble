@@ -1,6 +1,7 @@
 """Fetch files for playlist entries missing locally (explicit opt-in, via yt-dlp)."""
 from __future__ import annotations
 
+import functools
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -31,15 +32,6 @@ def acquire(
         if run(download_command(e, dest)).returncode != 0:
             failed.append(e)
     return failed
-
-
-def resolve(artist: str, title: str, fetch: Callable = None) -> Entry | None:
-    """Find the best YouTube Music match for a wanted track (first search hit)."""
-    from . import ytm
-
-    fetch = fetch or ytm.fetch
-    hits = fetch(f"ytsearch1:{artist} {title}")
-    return hits[0] if hits else None
 
 
 def playlist_download_command(
@@ -74,10 +66,15 @@ def download_missing(
 RETRY_AFTER = 30 * 86400
 
 
-def yt_search(query: str, limit: int = 10) -> list[dict]:
+@functools.cache
+def _ytmusic():
     from ytmusicapi import YTMusic  # unauthenticated song search; imported lazily
 
-    return YTMusic().search(query, filter="songs", limit=limit)
+    return YTMusic()
+
+
+def yt_search(query: str, limit: int = 10) -> list[dict]:
+    return _ytmusic().search(query, filter="songs", limit=limit)
 
 
 def find_song(artist: str, title: str, search: Callable[[str], list[dict]] = yt_search) -> Entry | None:
@@ -136,10 +133,11 @@ def fetch_wishes(
     from .matcher import norm
 
     now = now if now is not None else time.time()
+    tried = {r["key"]: r for r in db.execute("SELECT key, status, at FROM wish_attempts")}
     todo = []
     for w in balanced(wishes, getattr(cfg, "mix_weights", None)):
         key = f"{norm(w.artist)}|{norm(w.title)}"
-        row = db.execute("SELECT status, at FROM wish_attempts WHERE key=?", (key,)).fetchone()
+        row = tried.get(key)
         if row and (row["status"] == "ok" or now - row["at"] < RETRY_AFTER):
             continue
         todo.append((key, w))
@@ -149,7 +147,6 @@ def fetch_wishes(
         return 0
     if ask and ask(f"Download up to {limit} of {len(todo)} wishlist tracks into {cfg.music_dir}? [y/N] ").strip().lower() != "y":
         return 0
-    out = str(cfg.music_path / "%(album|Singles)s" / "%(artist,channel)s - %(title)s.%(ext)s")
     fetched = 0
     for key, w in todo:
         if fetched >= limit:
@@ -157,10 +154,9 @@ def fetch_wishes(
         entry = find_song(w.artist, w.title, search)
         status = "notfound"
         if entry:
-            cmd = playlist_download_command(cfg, f"https://music.youtube.com/watch?v={entry.video_id}", output=out)
-            status = "ok" if run(cmd).returncode == 0 else "failed"
+            status = "ok" if download_video(cfg, entry.video_id, run) else "failed"
         db.execute("INSERT OR REPLACE INTO wish_attempts(key, status, at) VALUES(?,?,?)", (key, status, now))
-        db.commit()
+        db.commit()  # per attempt: a download can take minutes, keep what is done if interrupted
         fetched += status == "ok"
     return fetched
 

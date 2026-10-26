@@ -122,7 +122,7 @@ def env(tmp_path, monkeypatch):
         lib.append(Track(f, f"Artist{i % 6}", f"Song{i}", "Alb", 300))
     vol = tmp_path / "Volumes"
     (vol / "SWIM PRO" / "Music").mkdir(parents=True)
-    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60)
+    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60, loudness_target=0)  # fake audio
     return cfg, history.connect(tmp_path / "h.db"), lib, vol / "SWIM PRO" / "Music", music
 
 
@@ -167,8 +167,8 @@ def test_shortcut_runs_an_action_from_the_menu_and_esc_quits(env):
 
 def test_reroll_from_the_menu_then_edit_the_playlist_with_the_cursor(env):
     cfg, db, lib, folder, _ = env
-    # r = reroll: confirm sync? (n), seed line; then the playlist editor opens: quit it; pause; quit the menu
-    shell, fake, out = keyed_shell(env, ["r", "n", "q", "any", "q"], lines=[""])
+    # r = reroll: confirm sync? (n), workout (Enter = first), seed line; then the playlist editor: quit; pause; quit
+    shell, fake, out = keyed_shell(env, ["r", "n", "enter", "q", "any", "q"], lines=[""])
     shell.run()
     tracks = json.loads(history.pending_session(db)["manifest"])["tracks"]
     assert len(tracks) >= 10 and len(list(folder.iterdir())) == len(tracks)

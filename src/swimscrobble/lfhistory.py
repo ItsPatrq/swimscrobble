@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from . import history
 from .taste import Transport, _get, http_get
 
 DAY = 86400
@@ -26,15 +27,8 @@ class Stat:
 
 
 def _meta(db, key: str) -> int | None:
-    row = db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
-    return int(row["value"]) if row else None
-
-
-def _set_meta(db, key: str, value: int | None) -> None:
-    if value is None:
-        db.execute("DELETE FROM meta WHERE key=?", (key,))
-    else:
-        db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (key, str(value)))
+    value = history.get_meta(db, key)
+    return int(value) if value is not None else None
 
 
 def sync_history(
@@ -77,8 +71,8 @@ def sync_history(
         if rows:
             newest = max(newest, max(r[0] for r in rows))
             resume_to = min(r[0] for r in rows)
-            _set_meta(db, "history_resume_to", resume_to)
-            _set_meta(db, "history_pull_newest", newest)
+            history.set_meta(db, "history_resume_to", resume_to)
+            history.set_meta(db, "history_pull_newest", newest)
         db.commit()
         pages = int(data.get("@attr", {}).get("totalPages", 1))
         if log and page % 25 == 0:
@@ -87,9 +81,9 @@ def sync_history(
             break
         page += 1
         sleep(0.25)  # stay well under Last.fm's rate limit
-    _set_meta(db, "lastfm_history_ts", newest)
-    _set_meta(db, "history_resume_to", None)
-    _set_meta(db, "history_pull_newest", None)
+    history.set_meta(db, "lastfm_history_ts", newest)
+    history.set_meta(db, "history_resume_to", None)
+    history.set_meta(db, "history_pull_newest", None)
     db.commit()
     return added
 

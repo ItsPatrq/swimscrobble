@@ -26,7 +26,7 @@ def env(tmp_path, monkeypatch):
         lib.append(Track(f, f"Artist{i % 6}", f"Song{i}", "Alb", 300))
     vol = tmp_path / "Volumes"
     (vol / "SWIM PRO" / "Music").mkdir(parents=True)
-    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60)
+    cfg = Config(music_dir=str(music), volumes_dir=str(vol), minutes=60, loudness_target=0)  # fake audio
     db = history.connect(tmp_path / "h.db")
     return cfg, db, lib, vol / "SWIM PRO" / "Music", music
 
@@ -112,9 +112,10 @@ def test_quit_words_and_eof_exit_cleanly(env):
 
 def test_reroll_stages_and_shows_the_playlist(env):
     cfg, db, lib, folder, _ = env
-    shell, fake, out = make(env, "r", "n", "42", "", "q")  # reroll: no sync first, seed 42, leave playlist view
+    shell, fake, out = make(env, "r", "n", "intervals", "42", "", "q")  # no sync first, intervals, seed 42, leave view
     shell.run()
     t = text(out)
+    assert json.loads(history.pending_session(db)["manifest"])["workout"] == "intervals"
     assert history.pending_session(db) is not None and len(list(folder.iterdir())) >= 10
     assert "staged session" in t and "end of your swim" in t and ("sync", False) not in fake.calls
 
@@ -126,13 +127,13 @@ def test_reroll_replaces_existing_playlist_after_confirmation_and_can_be_decline
     shell, _, _ = make(env, "r", "n", "q")  # decline the replacement
     shell.run()
     assert history.pending_session(db)["id"] == first
-    shell, _, _ = make(env, "r", "y", "n", "7", "", "q")
+    shell, _, _ = make(env, "r", "y", "n", "", "7", "", "q")
     shell.run()
     assert history.pending_session(db)["id"] != first
 
 
 def test_reroll_with_sync_calls_the_sync_action(env):
-    shell, fake, _ = make(env, "r", "y", "1", "", "q")
+    shell, fake, _ = make(env, "r", "y", "", "1", "", "q")
     shell.run()
     assert ("sync", False) in fake.calls
 
@@ -347,3 +348,41 @@ def test_bare_command_prints_help_when_not_a_terminal(env, capsys, monkeypatch):
 def test_paths_are_real(env):
     _, _, lib, _, _ = env
     assert all(Path(t.path).exists() for t in lib)
+
+
+def test_scrobble_screen_offers_the_garmin_swim(env):
+    from datetime import datetime
+
+    from swimscrobble.garmin import Swim
+
+    cfg, db, *_ = env
+    stage(env)
+    db.execute("UPDATE sessions SET planned_at = planned_at - 7200")
+    db.commit()
+    shell, fake, out = make(env, "c", "", "", "y", "n", "q")  # accept the Garmin length, no skips, send
+    shell.act.find_swim = lambda since, until: Swim(datetime(2026, 10, 25, 8, 0), 20.0, "lap_swimming")
+    shell.run()
+    assert "Garmin: lap swimming" in text(out) and fake.calls[-1] == ("submit", 4)  # 20 min of 5-min tracks
+
+
+def test_podcast_screen_marks_finished_episodes_then_syncs(env):
+    shell, fake, out = make(env, "o", "2", "q")
+    eps = [{"uuid": "e1", "podcast": "p", "title": "One", "filename": "01 - One.mp3"},
+           {"uuid": "e2", "podcast": "p", "title": "Two", "filename": "02 - Two.mp3"}]
+    marked = []
+    shell.act.podcast_episodes = lambda: eps
+    shell.act.mark_played = lambda chosen: (marked.extend(chosen) or "marked 1 played")
+    shell.run()
+    assert marked == [eps[1]] and "marked 1 played" in text(out) and "podcasts: 2 downloaded" in text(out)
+
+
+def test_liked_discoveries_are_loved(env):
+    from swimscrobble.planner import PlannedTrack
+
+    cfg, db, lib, *_ = env
+    shell, fake, out = make(env, "2")
+    loved = []
+    shell.act.love = lambda tracks: (loved.extend(tracks) or "loved 1 on Last.fm")
+    heard = [PlannedTrack(1, lib[0], "obsession"), PlannedTrack(2, lib[1], "rec"), PlannedTrack(3, lib[2], "fresh")]
+    shell.discoveries(heard)
+    assert loved == [(lib[2].artist, lib[2].title)] and "loved 1" in text(out)  # #2 of the two new ones

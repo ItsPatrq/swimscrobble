@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from . import history
 from .config import Config, config_dir
+from .planner import NEW_TO_YOU
 
 DAY = 86400
 
@@ -77,7 +78,7 @@ def dashboard(cfg: Config, db, now: float | None = None, agent_installed: bool =
     free = None
     if cfg.device_path.is_dir():
         free = shutil.disk_usage(cfg.device_path).free / 1e9
-    meta = db.execute("SELECT value FROM meta WHERE key='last_sync'").fetchone()
+    last_sync = history.get_meta(db, "last_sync")
     from .flow import orphans
 
     n_orphans, orphan_id = orphans(cfg, db)
@@ -89,7 +90,7 @@ def dashboard(cfg: Config, db, now: float | None = None, agent_installed: bool =
             "SELECT source, COUNT(*) c FROM pool WHERE retired=0 GROUP BY source ORDER BY c DESC")},
         swum_recently=len(history.recent_plays(db, cfg.no_repeat_days)),
         wishlist=len(wishlist_lines()),
-        last_sync_hours=(now - float(meta["value"])) / 3600 if meta else None,
+        last_sync_hours=(now - float(last_sync)) / 3600 if last_sync else None,
         agent_installed=agent_installed, orphans=n_orphans, orphan_session=orphan_id,
     )
 
@@ -113,10 +114,64 @@ def top_tracks(db, days: int = 30, n: int = 8, now: float | None = None) -> list
 
 def swim_stats(db) -> dict:
     sessions = {r["status"]: r["c"] for r in db.execute("SELECT status, COUNT(*) c FROM sessions GROUP BY status")}
-    scrobbled = db.execute("SELECT SUM(minutes) m, MAX(scrobbled_at) last FROM sessions WHERE status='scrobbled'").fetchone()
+    scrobbled = db.execute("SELECT SUM(COALESCE(swum_minutes, minutes)) m, MAX(scrobbled_at) last FROM sessions "
+                           "WHERE status='scrobbled'").fetchone()
     most = [(r["artist"], r["title"], r["c"]) for r in db.execute(
         "SELECT artist, title, COUNT(*) c FROM plays GROUP BY artist, title ORDER BY c DESC, MAX(ts) DESC LIMIT 5")]
     return {"sessions": sessions, "swim_minutes": scrobbled["m"] or 0.0, "last_swim": scrobbled["last"], "most_swum": most}
+
+
+@dataclass
+class Recap:
+    days: int
+    swims: int = 0
+    minutes: float = 0.0
+    distance_m: float = 0.0
+    tracks: int = 0
+    discoveries: list[tuple[str, str]] = field(default_factory=list)  # new-to-you tracks you heard and kept
+    skipped: int = 0
+    top_artists: list[tuple[str, int]] = field(default_factory=list)
+
+
+    def lines(self) -> list[str]:
+        if not self.swims:
+            return [f"No swims scrobbled in the last {self.days} days."]
+        head = [f"{self.swims} swims", f"{self.minutes / 60:.1f} h"]
+        if self.distance_m:
+            head.append(f"{self.distance_m / 1000:.1f} km")
+        head.append(f"{self.tracks} tracks heard")
+        if self.skipped:
+            head.append(f"{self.skipped} skipped")
+        out = [f"Last {self.days} days: " + ", ".join(head)]
+        if self.top_artists:
+            out.append("Most swum artists: " + " · ".join(f"{a} ×{n}" for a, n in self.top_artists))
+        if self.discoveries:
+            out.append(f"{len(self.discoveries)} discoveries: " + " · ".join(f"{a} - {t}" for a, t in self.discoveries[:10]))
+        return out
+
+
+def recap(db, days: int = 7, now: float | None = None) -> Recap:
+    """What the last `days` of swimming looked like."""
+    now = now if now is not None else time.time()
+    r = Recap(days)
+    window = "SELECT id FROM sessions WHERE status='scrobbled' AND scrobbled_at >= :since"
+    since = {"since": now - days * DAY}
+    source = {}  # (session, artist, title) -> bucket
+    for s in db.execute(f"SELECT id, manifest, minutes, swum_minutes, distance_m FROM sessions WHERE id IN ({window})",
+                        since):
+        r.swims += 1
+        r.minutes += s["swum_minutes"] if s["swum_minutes"] is not None else s["minutes"] or 0
+        r.distance_m += s["distance_m"] or 0
+        source.update({(s["id"], t["artist"], t["title"]): t.get("source") for t in json.loads(s["manifest"])["tracks"]})
+    artists: Counter = Counter()
+    for p in db.execute(f"SELECT session_id, artist, title FROM plays WHERE session_id IN ({window}) ORDER BY ts", since):
+        r.tracks += 1
+        artists[p["artist"]] += 1
+        if source.get((p["session_id"], p["artist"], p["title"])) in NEW_TO_YOU:
+            r.discoveries.append((p["artist"], p["title"]))
+    r.skipped = db.execute(f"SELECT COUNT(*) c FROM skips WHERE session_id IN ({window})", since).fetchone()["c"]
+    r.top_artists = artists.most_common(5)
+    return r
 
 
 def listening_mix(db, days: int = 30, now: float | None = None) -> dict[str, float]:

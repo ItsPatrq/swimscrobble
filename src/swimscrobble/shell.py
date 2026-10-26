@@ -9,7 +9,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console, Group
@@ -22,8 +22,8 @@ from .config import Config
 from .library import Track
 from .link import LocalIndex
 from .matcher import norm
-from .scrobble import build_scrobbles
-from .session import played_part
+from .planner import NEW_TO_YOU, fmt_min, parse_positions
+from .workouts import WORKOUTS
 from .ui import Item, KeyUI
 
 COLORS = {"obsession": "magenta", "mid": "cyan", "lost": "yellow", "fresh": "green", "rec": "bright_blue", "added": "white"}
@@ -37,7 +37,8 @@ HELP = """\
 [bold]c[/] scrobble      settle the last swim (how long, what you skipped) and send it to Last.fm
 [bold]k[/] skip          forget the staged playlist: you did not swim
 [bold]u[/] / [bold]x[/]        use / remove staged files left on the headphones by a discarded session
-[bold]o[/] podcasts      mirror your Pocket Casts Up Next queue to the headphones
+[bold]v[/] recap         the last 7 days of swimming
+[bold]o[/] podcasts      newest unplayed episode per subscription to the headphones
 [bold]e[/] on-connect    run the whole automatic routine now (settle, sync, stage)
 [bold]g[/] agent         install / remove the launchd agent that runs the routine when you plug in
 [bold]q[/] quit"""
@@ -58,10 +59,10 @@ class Actions:
     submit: Callable[[list], str]
     agent_installed: Callable[[], bool]
     agent_set: Callable[[bool], None]
-
-
-def fmt_min(seconds: float) -> str:
-    return f"{int(seconds // 60)}:{int(seconds % 60):02d}"
+    find_swim: Callable[[datetime, datetime], object] | None = None  # Garmin swim in the window, if set up
+    podcast_episodes: Callable[[], list[dict]] = list  # what the last podcast sync put on the headphones
+    mark_played: Callable[[list[dict]], str] = lambda eps: ""  # tell Pocket Casts, then sync again
+    love: Callable[[list[tuple[str, str]]], str] = lambda tracks: ""  # Last.fm love (+ your playlist if authorised)
 
 
 class Shell:
@@ -271,11 +272,12 @@ class Shell:
         if self.yes("Refresh Last.fm history and the pool first? (slower)", default=False):
             self.say(f"[dim]{self.act.sync(False)}[/]")
             self._library = None
+        workout = self.pick_workout()
         seed = self.ask("Seed (blank = random)")
-        self.say("[dim]building playlist ...[/]")
+        self.say("[dim]building playlist (levelling tracks new to the cache takes a moment) ...[/]")
         try:
             m = flow.reroll(self.cfg, self.db, int(seed) if seed.isdigit() else None,
-                            library_loader=lambda _: self.library(), feature_of=self.act.features)
+                            library_loader=lambda _: self.library(), feature_of=self.act.features, workout=workout)
         except RuntimeError as e:
             self.say(f"[red]{e}[/]")
             return
@@ -284,6 +286,15 @@ class Shell:
                  f"{sum(t['duration'] for t in m['tracks']) / 60:.0f} min")
         if show:
             self.playlist()
+
+    def pick_workout(self) -> str:
+        names = list(WORKOUTS)
+        default = self.cfg.workout
+        if self.keys:
+            i = self.keys.select([f"{n:10} {WORKOUTS[n].help}" for n in names], title="Workout")
+            return names[i] if isinstance(i, int) else default
+        answer = self.ask("Workout (" + " / ".join(names) + ")", default).lower()
+        return answer if answer in WORKOUTS else default
 
     def search_local(self, query: str, limit: int = 10) -> list[Track]:
         words = norm(query).split()
@@ -444,6 +455,23 @@ class Shell:
             self.library(refresh=True)
             self.say("They are in your library now; add one to the playlist with a, or sync (y) to pool them.")
 
+    def pick_many(self, rows: list[str], title: str) -> list[int]:
+        """Tick any number of rows (0-based indexes); nothing ticked = none."""
+        if self.keys:
+            return self.keys.multiselect(rows, allow_none=True, title=f"{title} (Space ticks, none ticked = none)") or []
+        for i, r in enumerate(rows, 1):
+            self.say(f"  {i}. {r}")
+        return sorted(i - 1 for i in parse_positions(self.ask(f"{title} (numbers, blank = none)")) if 0 < i <= len(rows))
+
+    def podcasts(self) -> None:
+        """Mark what you finished as played in Pocket Casts, then sync (finished ones make room for new ones)."""
+        eps = self.act.podcast_episodes()
+        picked = self.pick_many([e["title"] for e in eps], "Finished any?") if eps else []
+        if picked:
+            self.say(self.act.mark_played([eps[i] for i in picked]))
+        self.say("[dim]syncing podcasts (speeding up / trimming new episodes takes a moment) ...[/]")
+        self.say(self.act.podcasts())
+
     def sync(self) -> None:
         download = self.yes("Also download missing playlist and wishlist tracks?", default=True)
         self.say("[dim]syncing ... (first run after a long gap can take a while)[/]")
@@ -459,12 +487,15 @@ class Shell:
         if age_min < self.cfg.min_swim_gap_minutes and not self.yes(
                 f"This was staged only {age_min:.0f} min ago. Scrobble anyway?"):
             return
-        swim = float(self.ask("How many minutes did you swim?", f"{m.get('minutes', self.cfg.minutes):.0f}") or 0)
-        skip = self.ask("Positions you skipped (comma separated, blank = none)")
-        skipped = {int(x) for x in skip.replace(" ", "").split(",") if x.isdigit()}
-        plan, listened = played_part(m, swim, skipped)
-        end = datetime.now() - timedelta(minutes=self.cfg.session_offset_minutes)
-        scrobbles = build_scrobbles(plan, end - timedelta(seconds=listened))
+        now = datetime.now()
+        found = flow.lookup_swim(self.act.find_swim, row, now, lambda msg: self.say(f"[yellow]{msg}[/]"))
+        if found:
+            self.say(f"Garmin: [bold]{found.describe()}[/]")
+        default = found.minutes if found else m.get("minutes", self.cfg.minutes)
+        swim = float(self.ask("How many minutes did you swim?", f"{default:.0f}") or 0)
+        skipped = parse_positions(self.ask("Positions you skipped (comma separated, blank = none)"))
+        settled = flow.settle(m, self.cfg, now, found, swim, skipped)
+        scrobbles = settled.scrobbles
         t = Table(title=f"{len(scrobbles)} scrobbles", show_edge=False, header_style="bold")
         t.add_column("time")
         t.add_column("track")
@@ -478,11 +509,26 @@ class Shell:
         except Exception as e:  # keep the session so nothing is lost
             self.say(f"[red]failed: {e}[/] (the session is still pending)")
             return
-        history.mark_scrobbled(self.db, row["id"], [(s.artist, s.title, s.timestamp.timestamp()) for s in scrobbles])
+        flow.record(self.db, row, settled)
         flow._set_handled(False)
         self.say(f"[green]{msg}[/]")
+        self.discoveries(settled.plan)
         if self.yes("Stage the next playlist now?", default=True):
             self.reroll()
+
+    def discoveries(self, heard) -> None:
+        """New-to-you tracks you heard all the way through: love the ones you liked."""
+        new = [(p.track.artist, p.track.title) for p in heard if p.source in NEW_TO_YOU]
+        picked = self.pick_many([f"{a} - {t}" for a, t in new], "New to you this swim: liked any?") if new else []
+        if picked:
+            try:
+                self.say(f"[green]{self.act.love([new[i] for i in picked])}[/]")
+            except Exception as e:
+                self.say(f"[red]could not love them: {e}[/]")
+
+    def recap(self) -> None:
+        for line in stats.recap(self.db, 7).lines():
+            self.say(line, markup=False)
 
     def skip(self) -> None:
         row, _ = self.session()
@@ -522,12 +568,12 @@ class Shell:
         handlers: dict[str, Callable[[], None]] = {
             "p": self.playlist, "r": self.reroll, "a": self.add_track, "s": self.stats, "w": self.wishlist,
             "y": self.sync, "c": self.scrobble, "k": self.skip, "u": self.adopt, "x": self.clear,
-            "o": lambda: self.say(self.act.podcasts()),
+            "o": self.podcasts, "v": self.recap,
             "e": lambda: [self.say(x) for x in self.act.on_connect()], "g": self.agent,
             "?": lambda: self.say(HELP), "h": lambda: self.say(HELP),
         }
         names = {"playlist": "p", "reroll": "r", "add": "a", "stats": "s", "wishlist": "w", "sync": "y", "scrobble": "c",
-                 "skip": "k", "podcasts": "o", "on-connect": "e", "agent": "g", "help": "?", "quit": "q", "exit": "q"}
+                 "skip": "k", "podcasts": "o", "recap": "v", "on-connect": "e", "agent": "g", "help": "?", "quit": "q", "exit": "q"}
         if self.keys:
             return self.run_keys(handlers)
         self.dashboard()
@@ -565,7 +611,8 @@ class Shell:
         Item("k", "Skip", "forget the staged playlist (no swim)"),
         Item("u", "Use leftovers", "files on the headphones from a discarded session"),
         Item("x", "Remove leftovers", "delete those files"),
-        Item("o", "Podcasts", "mirror the Pocket Casts queue"),
+        Item("v", "Recap", "the last 7 days of swimming"),
+        Item("o", "Podcasts", "newest unplayed episodes"),
         Item("e", "On-connect", "run the whole routine now"),
         Item("g", "Agent", "install / remove the plug-in agent"),
         Item("?", "Help", "what everything does"),
@@ -604,8 +651,9 @@ class _Cancel(Exception):
 
 def real_actions(cfg: Config, db) -> Actions:
     """The production wiring: the same functions the command line uses."""
-    from . import acquire, cli, lastfm, launchd, listenbrainz, pocketcasts
+    from . import acquire, cli, garmin, lastfm, launchd, pocketcasts, ytm
     from .energy import cached_features
+    from .library import scan_config
 
     def sync(download: bool) -> str:
         rep = cli.run_sync(cfg, db, download=download)
@@ -614,22 +662,31 @@ def real_actions(cfg: Config, db) -> Actions:
                 f"{rep.playlist_total} found · {len(p.missing)} wishlist entries")
 
     def podcasts() -> str:
-        token = pocketcasts.saved_token() or pocketcasts.login()
-        return str(pocketcasts.sync_queue(pocketcasts.up_next(token), cfg.device_path / cfg.device_podcast_subdir,
-                                          db, cfg.max_podcasts))
+        return str(cli.podcast_sync(cfg, db, only_if_logged_in=False)())
+
+    def love(tracks: list[tuple[str, str]]) -> str:
+        sk = lastfm.load_session_key()
+        for a, t in tracks:
+            lastfm.love(a, t, sk)
+        msg = f"loved {len(tracks)} on Last.fm"
+        if cfg.ytm_auth_path and cfg.playlists:
+            ids = [e.video_id for a, t in tracks if (e := acquire.find_song(a, t))]
+            if ids:
+                ytm.add_to_playlist(cfg.ytm_auth_path, cfg.playlists[0], ids)
+                msg += f", added {len(ids)} to your playlist"
+        return msg
+
+    def mark_played(eps: list[dict]) -> str:
+        pocketcasts.mark_played(eps)
+        return pocketcasts.describe_marked(eps)
 
     def on_connect() -> list[str]:
-        flow._set_handled(False)
-        return flow.on_connect(cfg, db, notify=cli.notify, pool_sync=lambda: sync(cfg.auto_download))
+        return flow.on_connect(cfg, db, notify=cli.notify, pool_sync=lambda: sync(cfg.auto_download), force=True,
+                               find_swim=garmin.finder(cfg),
+                               podcast_sync=cli.podcast_sync(cfg, db))
 
     def submit(scrobbles: list) -> str:
-        stale = lastfm.check_window(scrobbles)
-        if stale:
-            raise ValueError(f"{len(stale)} scrobbles are older than Last.fm's 14-day limit")
-        n = lastfm.submit(scrobbles, lastfm.load_session_key())
-        if cfg.listenbrainz:
-            listenbrainz.submit(scrobbles)
-        return f"Last.fm accepted {n}/{len(scrobbles)}"
+        return flow.describe_sent(flow.send_scrobbles(scrobbles, cfg), scrobbles, cfg)
 
     import os
 
@@ -637,12 +694,13 @@ def real_actions(cfg: Config, db) -> Actions:
         launchd.install(os.getuid()) if on else launchd.uninstall(os.getuid())
 
     return Actions(
-        load_library=lambda: cli._scan(cfg),
+        load_library=lambda: scan_config(cfg),
         features=lambda t: cached_features(db, t),
         sync=sync,
         search_youtube=lambda q: acquire.yt_search(q, 8),
         download_video=lambda vid: acquire.download_video(cfg, vid),
         find_song=lambda a, t: acquire.find_song(a, t),
-        podcasts=podcasts, on_connect=on_connect, submit=submit,
+        podcasts=podcasts, on_connect=on_connect, submit=submit, mark_played=mark_played, love=love,
+        podcast_episodes=lambda: pocketcasts.on_device(db), find_swim=garmin.finder(cfg),
         agent_installed=lambda: Path(launchd.PLIST).exists(), agent_set=agent_set,
     )

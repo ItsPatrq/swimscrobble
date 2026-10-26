@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import json
-import urllib.request
 from collections.abc import Callable
 
 from .config import secret
+from .net import request_json
 from .scrobble import Scrobble
 
 URL = "https://api.listenbrainz.org/1/submit-listens"
@@ -15,13 +15,8 @@ Transport = Callable[[dict, str], dict]
 
 
 def http_post(payload: dict, token: str) -> dict:
-    req = urllib.request.Request(
-        URL,
-        data=json.dumps(payload).encode(),
-        headers={"Authorization": f"Token {token}", "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+    return request_json(URL, json.dumps(payload).encode(),
+                        {"Authorization": f"Token {token}", "Content-Type": "application/json"})
 
 
 def build_payload(scrobbles: list[Scrobble]) -> dict:

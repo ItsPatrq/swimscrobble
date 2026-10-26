@@ -1,7 +1,8 @@
 import numpy as np
 
 from swimscrobble.dpp import greedy_dpp
-from swimscrobble.sequence import arc_target, order, tempo_gap
+from swimscrobble.sequence import order, tempo_gap
+from swimscrobble.workouts import arc_target
 
 
 def unit(v):
